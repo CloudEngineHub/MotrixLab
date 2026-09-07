@@ -29,7 +29,7 @@
         </body>
 
         <!-- Target -->
-        <body name="target" pos="0 0 0.1" mocap="true">
+        <body name="target" pos="0 0 0.1">
             <joint name="target_x" type="slide" axis="1 0 0" />
             <joint name="target_y" type="slide" axis="0 1 0" />
             <geom name="target_geom" type="sphere" size="0.1" rgba="1 0 0 0.8" contype="0" conaffinity="0" />

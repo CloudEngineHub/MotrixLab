@@ -1,0 +1,10 @@
+# @package _global_
+# Task acrobot: skrl.ppo, train_backend=torch delta.
+defaults:
+  - /task/acrobot/skrl.ppo@_global_
+  - _self_
+task:
+  train_backend: torch
+algo:
+  agent:
+    entropy_loss_scale: 0.01

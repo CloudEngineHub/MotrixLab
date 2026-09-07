@@ -1,17 +1,5 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
 
 """
 Run all training demos with both JAX and PyTorch backends.
@@ -23,7 +11,7 @@ training for each one using both training backends.
 import argparse
 import subprocess
 import sys
-from typing import List
+from pathlib import Path
 
 # List of all available demo environments
 ALL_DEMOS = [
@@ -36,8 +24,8 @@ ALL_DEMOS = [
     "dm-walker",
     "dm-runner",
     "bounce_ball",
-    "go1-flat-terrain-walk",
-    "go1-rough-terrain-walk",
+    "go1-walk-flat",
+    "go1-walk-rough",
     "go1-stairs-terrain-walk",
     "anymal_c_navigation_flat",
     "franka-lift-cube",
@@ -48,17 +36,18 @@ ALL_DEMOS = [
 BACKENDS = ["jax", "torch"]
 
 
-def run_command(env: str, backend: str, extra_args: List[str]) -> int:
+def run_command(env: str, backend: str, extra_args: list[str]) -> int:
     """Run a single training command."""
+    backend_task = Path("configs/task") / env / f"skrl.ppo.{backend}.yaml"
+    task_option = f"{env}/skrl.ppo.{backend}" if backend_task.exists() else f"{env}/skrl.ppo"
     cmd = [
         "uv",
         "run",
         "scripts/train.py",
-        "--env",
-        env,
-        "--train-backend",
-        backend,
+        f"task={task_option}",
     ] + extra_args
+    if not backend_task.exists():
+        cmd.append(f"task.train_backend={backend}")
 
     print(f"\n{'=' * 80}")
     print(f"Running: {' '.join(cmd)}")

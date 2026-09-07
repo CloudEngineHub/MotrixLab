@@ -1,0 +1,92 @@
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
+
+from dataclasses import dataclass, field
+
+from omegaconf import MISSING
+
+
+@dataclass
+class FastSacAgentCfg:
+    """FastSAC agent hyperparameters (ported from holosoma ``FastSACConfig``)."""
+
+    # optimization
+    actor_learning_rate: float = MISSING
+    critic_learning_rate: float = MISSING
+    alpha_learning_rate: float = MISSING
+    weight_decay: float = MISSING
+    max_grad_norm: float = MISSING
+
+    # actor / critic networks
+    actor_hidden_dim: int = MISSING
+    critic_hidden_dim: int = MISSING
+    num_q_networks: int = MISSING
+    use_layer_norm: bool = MISSING
+    use_tanh: bool = MISSING
+    log_std_max: float = MISSING
+    log_std_min: float = MISSING
+
+    # distributional critic (C51)
+    num_atoms: int = MISSING
+    v_min: float = MISSING
+    v_max: float = MISSING
+
+    # SAC
+    gamma: float = MISSING
+    tau: float = MISSING
+    alpha_init: float = MISSING
+    use_autotune: bool = MISSING
+    target_entropy_ratio: float = MISSING  # holosoma g1 fast_sac uses 0.0
+
+    # replay / updates
+    buffer_size: int = MISSING  # per environment
+    num_steps: int = MISSING  # n-step returns
+    batch_size: int = MISSING  # global batch size (split across envs)
+    learning_starts: int = MISSING
+    policy_frequency: int = MISSING
+    num_updates: int = MISSING
+
+    # observation normalization
+    obs_normalization: bool = MISSING
+
+    # perf knobs (auto-disabled on cpu)
+    compile: bool = MISSING
+    amp: bool = MISSING
+    amp_dtype: str = MISSING
+
+
+@dataclass
+class FastSacAsyncOptionsCfg:
+    """Heterogeneous collector/learner trainer configuration."""
+
+    ring_capacity: int = MISSING
+    utd_mode: str = MISSING
+    weight_publish_interval: int = MISSING
+    weight_poll_interval: int = MISSING
+    max_ingest_per_iter: int = MISSING
+    idle_sleep_s: float = MISSING
+    collector_inference_device: str = MISSING
+    collector_compile: bool = MISSING
+    collector_amp: bool = MISSING
+    collector_amp_dtype: str = MISSING
+
+
+@dataclass
+class FastSacTrainerCfg:
+    # number of environment-interaction iterations (each collects num_envs transitions)
+    num_learning_iterations: int = MISSING
+    async_options: FastSacAsyncOptionsCfg = field(default_factory=FastSacAsyncOptionsCfg)
+
+
+@dataclass
+class FastSacCfg:
+    """Provider-specific FastSAC configuration."""
+
+    # learning device; None -> cuda if available else cpu
+    device: str | None = MISSING
+    agent: FastSacAgentCfg = field(default_factory=FastSacAgentCfg)
+    trainer: FastSacTrainerCfg = field(default_factory=FastSacTrainerCfg)
+
+    # Execution topology. False runs the synchronous trainer; True runs the
+    # heterogeneous collector/learner trainer.
+    asynchronous: bool = MISSING

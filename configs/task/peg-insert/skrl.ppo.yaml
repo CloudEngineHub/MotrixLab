@@ -1,0 +1,28 @@
+# @package _global_
+# Task peg-insert: skrl.ppo shared training recipe.
+defaults:
+  - /algo_base@algo: skrl.ppo
+  - _self_
+task:
+  env: peg-insert
+  rllib: skrl
+  algo: ppo
+  train_backend: null
+num_envs: 2048
+play_num_envs: 16
+seed: 42
+algo:
+  models:
+    separate: true
+  agent:
+    rollouts: 24
+    learning_epochs: 4
+    mini_batches: 8
+    learning_rate: 0.0003
+    learning_rate_scheduler_kwargs:
+      kl_threshold: 0.01
+    entropy_loss_scale: 0.02
+    value_loss_scale: 1.0
+    rewards_shaper_scale: 0.06
+  trainer:
+    timesteps: 20000

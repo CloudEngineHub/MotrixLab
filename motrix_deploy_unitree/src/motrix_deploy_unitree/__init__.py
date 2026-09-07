@@ -1,0 +1,33 @@
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
+
+"""Unitree Go2 DDS hardware backend."""
+
+__version__ = "0.3.0"
+
+from motrix_deploy_unitree.config import (
+    GO2_JOINT_NAME_TO_MOTOR_INDEX,
+    GO2_MOTOR_COUNT,
+    UnitreeGo2BackendConfig,
+)
+from motrix_deploy_unitree.direct import UnitreeGo2DirectInterface
+from motrix_deploy_unitree.interface import UnitreeGo2RobotInterface, UnitreeSdkBindings
+from motrix_deploy_unitree.remote import (
+    BUTTON_NAMES,
+    UnitreeRemoteGamePadDevice,
+    UnitreeRemoteState,
+    decode_wireless_remote,
+)
+
+__all__ = [
+    "BUTTON_NAMES",
+    "GO2_JOINT_NAME_TO_MOTOR_INDEX",
+    "GO2_MOTOR_COUNT",
+    "UnitreeGo2BackendConfig",
+    "UnitreeGo2DirectInterface",
+    "UnitreeGo2RobotInterface",
+    "UnitreeSdkBindings",
+    "UnitreeRemoteGamePadDevice",
+    "UnitreeRemoteState",
+    "decode_wireless_remote",
+]

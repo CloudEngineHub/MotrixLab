@@ -98,7 +98,7 @@ docker build -t motphys/motrixlab:latest .
 docker run --gpus all \
     -v $(pwd)/runs:/root/motrixlab/runs \
     motphys/motrixlab:latest \
-    scripts/train.py --train-backend jax --num-envs 2048 --env cartpole
+    scripts/train.py task=cartpole/skrl.ppo task.train_backend=jax num_envs=2048
 ```
 
 ### 持久化训练结果
@@ -185,5 +185,5 @@ deploy:
 ## 下一步
 
 -   查看 [快速入门教程](hello_motrixlab.md) 了解 MotrixLab 基本用法
--   阅读 [训练示例](../demo/cartpole.md) 学习更多训练任务
+-   浏览 [环境](../envs/index.md) 了解更多可用任务
 -   探索 [基础框架](../tutorial/basic_frame.md) 深入理解框架架构

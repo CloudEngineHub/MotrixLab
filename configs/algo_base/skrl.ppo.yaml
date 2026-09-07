@@ -1,0 +1,108 @@
+# Source-of-truth base values for the skrl.ppo provider.
+# Framework-neutral runtime settings live in the task recipe root.
+defaults:
+  # Load the structured SkrlCfg schema registered by the SKRL provider.
+  - _skrl_ppo_schema
+  # Apply the values in this file after the schema.
+  - _self_
+models:
+  # Build separate policy/value networks; false uses one shared trunk based on the policy architecture.
+  separate: false
+  policy:
+    # Clip sampled actions to the action-space bounds inside the policy model.
+    clip_actions: false
+    # Clamp the learned log standard deviation to [min_log_std, max_log_std].
+    clip_log_std: true
+    # Initial log standard deviation of the Gaussian action distribution.
+    initial_log_std: 1.0
+    # Lower bound used when clip_log_std is enabled.
+    min_log_std: -20.0
+    # Upper bound used when clip_log_std is enabled.
+    max_log_std: 2.0
+    # Reduction applied when combining per-action log probabilities (for example, sum or mean).
+    reduction: sum
+    # Symbolic input used by the to_network helper; current PPO trainers read policy observations directly.
+    input: STATES
+    # Number of units in each policy hidden layer.
+    hiddens:
+      - 256
+      - 128
+      - 64
+    # Hidden-layer activations. One entry is reused for all layers; otherwise lengths must match hiddens.
+    hidden_activation:
+      - elu
+    # Symbolic output used by the to_network helper; current PPO trainers always emit the action vector.
+    output: ACTIONS
+    # Optional to_network output activation; current custom JAX/Torch PPO model builders do not consume it.
+    output_activation: ""
+    # Multiplicative to_network output scale; current custom JAX/Torch PPO model builders do not consume it.
+    output_scale: 1.0
+  value:
+    # Clip value-model outputs to the action-space bounds (normally disabled for a scalar value).
+    clip_actions: false
+    # Symbolic input used by the to_network helper; current PPO trainers read privileged state directly.
+    input: STATES
+    # Number of units in each value hidden layer when models.separate is true.
+    hiddens:
+      - 256
+      - 128
+      - 64
+    # Value activations used when models.separate is true; one entry is reused for all hidden layers.
+    hidden_activation:
+      - elu
+    # Symbolic output used by the to_network helper; current PPO trainers always emit one state value.
+    output: ONE
+    # Optional to_network output activation; current custom JAX/Torch PPO model builders do not consume it.
+    output_activation: ""
+    # Multiplicative to_network output scale; current custom JAX/Torch PPO model builders do not consume it.
+    output_scale: 1.0
+memory:
+  # SKRL replay/rollout memory implementation used by PPO.
+  class_name: RandomMemory
+  # Number of transitions stored per environment; -1 uses agent.rollouts automatically.
+  memory_size: -1
+agent:
+  # Environment steps collected per rollout before each PPO update.
+  rollouts: 32
+  # Optimization passes over each collected rollout.
+  learning_epochs: 2
+  # Number of mini-batches used to split each rollout during optimization.
+  mini_batches: 32
+  # Reward discount factor gamma.
+  discount_factor: 0.99
+  # Generalized Advantage Estimation lambda (mapped to gae_lambda in SKRL).
+  lam: 0.95
+  # Optimizer learning rate.
+  learning_rate: 0.001
+  # Learning-rate scheduler class name; use null to disable scheduling.
+  learning_rate_scheduler: KLAdaptiveLR
+  learning_rate_scheduler_kwargs:
+    # KL target used by KLAdaptiveLR to increase or decrease the learning rate.
+    kl_threshold: 0.008
+  # Initial timesteps that use random actions instead of the policy.
+  random_timesteps: 0
+  # Number of timesteps collected before gradient updates begin.
+  learning_starts: 0
+  # Maximum gradient norm; non-positive values disable clipping in SKRL.
+  grad_norm_clip: 1.0
+  # PPO probability-ratio clipping range.
+  ratio_clip: 0.2
+  # PPO value-function clipping range.
+  value_clip: 0.2
+  # Compatibility field for legacy task configs; SKRL 2.1 no longer consumes it.
+  clip_predicted_values: true
+  # Entropy bonus coefficient used to encourage exploration.
+  entropy_loss_scale: 0.0
+  # Value-function loss coefficient.
+  value_loss_scale: 2.0
+  # KL-divergence threshold for early stopping; 0 disables the threshold.
+  kl_threshold: 0.0
+  # Multiplier applied to rewards before PPO processing.
+  rewards_shaper_scale: 1.0
+  # Bootstrap truncated episodes caused by a time limit when computing returns.
+  time_limit_bootstrap: true
+  # Enable mixed-precision optimization when supported by the selected backend.
+  mixed_precision: false
+trainer:
+  # Total number of vectorized environment steps processed by the sequential trainer.
+  timesteps: 10000

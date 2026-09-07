@@ -98,7 +98,7 @@ If you only want to run the training container without using Docker Compose:
 docker run --gpus all \
     -v $(pwd)/runs:/root/motrixlab/runs \
     motphys/motrixlab:latest \
-    scripts/train.py --train-backend jax --num-envs 2048 --env cartpole
+    scripts/train.py task=cartpole/skrl.ppo task.train_backend=jax num_envs=2048
 ```
 
 ### Persisting Training Results
@@ -185,5 +185,5 @@ deploy:
 ## Next Steps
 
 -   Check out the [Quick Start Tutorial](hello_motrixlab.md) to learn basic MotrixLab usage
--   Read [Training Examples](../demo/cartpole.md) for more training tasks
+-   Browse [Environments](../envs/index.md) for more available tasks
 -   Explore [Basic Framework](../tutorial/basic_frame.md) for in-depth understanding of the framework architecture

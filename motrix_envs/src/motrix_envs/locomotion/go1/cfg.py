@@ -1,26 +1,16 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
 
 import os
-from dataclasses import dataclass, field
 
-from motrix_envs import registry
-from motrix_envs.base import EnvCfg
+from motrix_env_core import registry
+from motrix_env_core.base import SimCfg
+from motrix_env_core.config import configclass
+from motrix_env_core.config.scene import SceneCfg
+from motrix_env_core.direct.env import DirectEnvCfg
 
 
-@dataclass
+@configclass
 class NoiseConfig:
     level: float = 1.0
     scale_joint_angle: float = 0.03
@@ -30,7 +20,7 @@ class NoiseConfig:
     scale_linvel: float = 0.1
 
 
-@dataclass
+@configclass
 class ControlConfig:
     stiffness = 80  # [N*m/rad]
     damping = 1  # [N*m*s/rad]
@@ -38,7 +28,7 @@ class ControlConfig:
     action_scale = 0.05
 
 
-@dataclass
+@configclass
 class InitState:
     # the initial position of the robot in the world frame
     pos = [0.0, 0.0, 0.42]
@@ -60,7 +50,7 @@ class InitState:
     }
 
 
-@dataclass
+@configclass
 class Commands:
     vel_limit = [
         [-1.0, -1.0, -1.0],  # min: vel_x [m/s], vel_y [m/s], ang_vel [rad/s]
@@ -68,7 +58,7 @@ class Commands:
     ]
 
 
-@dataclass
+@configclass
 class Normalization:
     lin_vel = 2
     ang_vel = 0.25
@@ -76,7 +66,7 @@ class Normalization:
     dof_vel = 0.05
 
 
-@dataclass
+@configclass
 class Asset:
     body_name = "trunk"
     foot_name = "foot"
@@ -85,7 +75,7 @@ class Asset:
     terminate_after_contacts_on = ["trunk"]
 
 
-@dataclass
+@configclass
 class Sensor:
     local_linvel = "local_linvel"
     gyro = "gyro"
@@ -93,10 +83,73 @@ class Sensor:
 
 
 # -- docs-tag-start: go1-reward-config --
-@dataclass
+@configclass
 class RewardConfig:
-    scales: dict[str, float] = field(
-        default_factory=lambda: {
+    scales: dict[str, float] = {
+        "termination": -0.0,
+        "tracking_lin_vel": 1.0,
+        "tracking_ang_vel": 0.5,
+        "lin_vel_z": -2.0,
+        "ang_vel_xy": -0.05,
+        "orientation": -0.0,
+        "torques": -0.00001,
+        "dof_vel": -0.0,
+        "dof_acc": -2.5e-7,
+        "base_height": -0.0,
+        "feet_air_time": 1.0,
+        "collision": -1.0 * 0,
+        "action_rate": -0.001,
+        "stand_still": -0.0,
+        "hip_pos": -1,
+        "calf_pos": -0.3 * 0,
+    }
+
+    tracking_sigma: float = 0.25
+    max_foot_height: float = 0.1
+
+
+# -- docs-tag-end: go1-reward-config --
+
+
+@configclass
+class Go1TerrainWalkDirectEnvCfg(DirectEnvCfg):
+    max_episode_seconds: float = 20.0
+    noise_config: NoiseConfig = NoiseConfig()
+    control_config: ControlConfig = ControlConfig()
+    reward_config: RewardConfig = RewardConfig()
+    init_state: InitState = InitState()
+    commands: Commands = Commands()
+    normalization: Normalization = Normalization()
+    asset: Asset = Asset()
+    sensor: Sensor = Sensor()
+    sim: SimCfg = SimCfg(dt=0.01)
+    ctrl_dt: float = 0.01
+
+
+@registry.envcfg("go1-stairs-terrain-walk")
+@configclass
+class Go1WalkDirectStairsEnvCfg(Go1TerrainWalkDirectEnvCfg):
+    """Control Unitree Go1 to walk over stair terrain.
+
+    zh_CN: 控制 Unitree Go1 在台阶地形上行走。
+    """
+
+    render_spacing: float = 0.0
+    scene: SceneCfg = SceneCfg(file=os.path.dirname(__file__) + "/xmls/scene_stairs_terrain.xml")
+    # Pinned to the scene's geom inventory (single hfield "floor"): the legacy
+    # env matched ground/foot geoms by substring over exactly these names.
+    # Foot contact-force sensors follow Sensor.feet order.
+
+    @configclass
+    class Commands:
+        vel_limit = [
+            [0.5, -0.0, 0.0],  # min: vel_x [m/s], vel_y [m/s], ang_vel [rad/s]
+            [1.0, 0.0, 0.0],  # max
+        ]
+
+    @configclass
+    class RewardConfig:
+        scales: dict[str, float] = {
             "termination": -0.0,
             "tracking_lin_vel": 1.0,
             "tracking_ang_vel": 0.5,
@@ -109,83 +162,15 @@ class RewardConfig:
             "base_height": -0.0,
             "feet_air_time": 1.0,
             "collision": -1.0 * 0,
+            "feet_stumble": -0.1,
             "action_rate": -0.001,
             "stand_still": -0.0,
             "hip_pos": -1,
             "calf_pos": -0.3 * 0,
         }
-    )
-
-    tracking_sigma: float = 0.25
-    max_foot_height: float = 0.1
-
-
-# -- docs-tag-end: go1-reward-config --
-
-
-@registry.envcfg("go1-flat-terrain-walk")
-@dataclass
-class Go1WalkNpEnvCfg(EnvCfg):
-    max_episode_seconds: float = 20.0
-    model_file: str = os.path.dirname(__file__) + "/xmls/scene_motor_actuator.xml"
-    noise_config: NoiseConfig = field(default_factory=NoiseConfig)
-    control_config: ControlConfig = field(default_factory=ControlConfig)
-    reward_config: RewardConfig = field(default_factory=RewardConfig)
-    init_state: InitState = field(default_factory=InitState)
-    commands: Commands = field(default_factory=Commands)
-    normalization: Normalization = field(default_factory=Normalization)
-    asset: Asset = field(default_factory=Asset)
-    sensor: Sensor = field(default_factory=Sensor)
-    sim_dt: float = 0.01
-    ctrl_dt: float = 0.01
-
-
-@registry.envcfg("go1-rough-terrain-walk")
-@dataclass
-class Go1WalkNpRoughEnvCfg(Go1WalkNpEnvCfg):
-    render_spacing: float = 0.0
-    model_file: str = os.path.dirname(__file__) + "/xmls/scene_rough_terrain.xml"
-
-
-@registry.envcfg("go1-stairs-terrain-walk")
-@dataclass
-class Go1WalkNpStairsEnvCfg(Go1WalkNpEnvCfg):
-    render_spacing: float = 0.0
-    model_file: str = os.path.dirname(__file__) + "/xmls/scene_stairs_terrain.xml"
-
-    @dataclass
-    class Commands:
-        vel_limit = [
-            [0.5, -0.0, 0.0],  # min: vel_x [m/s], vel_y [m/s], ang_vel [rad/s]
-            [1.0, 0.0, 0.0],  # max
-        ]
-
-    @dataclass
-    class RewardConfig:
-        scales: dict[str, float] = field(
-            default_factory=lambda: {
-                "termination": -0.0,
-                "tracking_lin_vel": 1.0,
-                "tracking_ang_vel": 0.5,
-                "lin_vel_z": -2.0,
-                "ang_vel_xy": -0.05,
-                "orientation": -0.0,
-                "torques": -0.00001,
-                "dof_vel": -0.0,
-                "dof_acc": -2.5e-7,
-                "base_height": -0.0,
-                "feet_air_time": 1.0,
-                "collision": -1.0 * 0,
-                "feet_stumble": -0.1,
-                "action_rate": -0.001,
-                "stand_still": -0.0,
-                "hip_pos": -1,
-                "calf_pos": -0.3 * 0,
-            }
-        )
 
         tracking_sigma: float = 0.25
         max_foot_height: float = 0.1
 
-    commands: Commands = field(default_factory=Commands)
-    reward_config: RewardConfig = field(default_factory=RewardConfig)
+    commands: Commands = Commands()
+    reward_config: RewardConfig = RewardConfig()

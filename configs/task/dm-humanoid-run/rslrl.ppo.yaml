@@ -1,0 +1,28 @@
+# @package _global_
+# Task dm-humanoid-run: rslrl.ppo shared training recipe.
+defaults:
+  - /algo_base@algo: rslrl.ppo
+  - _self_
+task:
+  env: dm-humanoid-run
+  rllib: rslrl
+  algo: ppo
+  train_backend: null
+num_envs: 2048
+play_num_envs: 16
+seed: 42
+algo:
+  num_steps_per_env: 64
+  max_iterations: 400
+  actor:
+    hidden_dims:
+      - 512
+      - 256
+      - 128
+  critic:
+    hidden_dims:
+      - 512
+      - 256
+      - 128
+  algorithm:
+    entropy_coef: 0.001

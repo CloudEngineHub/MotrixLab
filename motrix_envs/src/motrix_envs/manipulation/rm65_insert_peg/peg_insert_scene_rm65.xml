@@ -1,0 +1,75 @@
+<mujoco model="peg insert scene rm65">
+  <!-- 【RM65机械臂适配修改】使用RM65机械臂替换原Franka机械臂 -->
+  <include file="../../common/rm65/mjx_rm65.xml" />
+
+  <statistic center="0.3 0 0.4" extent="1" />
+
+  <!-- 【效果优化-参数调整】减小时间步，提升仿真稳定性 -->
+  <option timestep="0.002" iterations="10" ls_iterations="12" integrator="implicitfast">
+    <flag eulerdamp="disable" />
+  </option>
+
+  <custom>
+    <numeric data="12" name="max_contact_points" />
+  </custom>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0" />
+    <rgba haze="0.15 0.25 0.35 1" />
+    <global azimuth="120" elevation="-20" />
+    <scale contactwidth="0.075" contactheight="0.025" forcewidth="0.05" com="0.05" framewidth="0.01"
+      framelength="0.2" />
+  </visual>
+
+  <asset>
+    <material name="Transport" rgba="0.6 0.6 0.6 1" reflectance="0.3" metallic="0.0" roughness="0.5" />
+    <texture name="skybox" type="skybox" builtin="gradient" rgb1="0.4 0.4 0.4" rgb2="0 0 0"
+      width="512" height="512" />
+    <texture name="motphys-ground" type="2d" file="../../common/motphys-ground.png" />
+    <material name="motphys-ground" texture="motphys-ground" texuniform="true" texrepeat="0.4 0.4" />
+
+    <!-- 【RM65机械臂适配修改】销轴和插孔材质 -->
+    <material name="peg_material" rgba="0.7 0.7 0.7 1" reflectance="0.3" metallic="0.8" roughness="0.2" />
+    <material name="socket_material" rgba="0.3 0.3 0.3 1" reflectance="0.2" metallic="0.5" roughness="0.3" />
+  </asset>
+
+  <worldbody>
+    <light diffuse="0.6 0.6 0.6" pos="0 0 1.5"
+      dir="-0.49835488200187683 0.2925136387348175 -0.8161361217498779" directional="true" />
+    <geom name="floor" size="0 0 0.05" pos="0 0 -0.75" type="plane" material="motphys-ground"
+      contype="1" />
+
+    <!-- 【RM65机械臂适配修改】桌面位置调整以适配RM65工作空间 -->
+    <geom name="table" size="0.70 0.42 0.03" type="box" material="Transport" pos="0.57 0 -0.03" contype="1" conaffinity="1" />
+
+    <!-- 【RM65机械臂适配修改】销轴初始位置调整 -->
+    <body name="free_peg">
+      <joint name="peg_x" type="slide" axis="1 0 0" damping="0.2" armature="0.001" />
+      <joint name="peg_y" type="slide" axis="0 1 0" damping="0.2" armature="0.001" />
+      <joint name="peg_z" type="slide" axis="0 0 1" damping="0.2" armature="0.001" />
+      <joint name="peg_rot" type="ball" damping="0.05" armature="0.0001" />
+      <inertial pos="0 0 0" mass="0.070686" diaginertia="0.000062881 0.000062881 0.000007952" />
+      <geom name="peg" type="cylinder" size="0.015 0.05" pos="0 0 0" material="peg_material"
+        contype="1" conaffinity="1" friction="0.8 0.005 0.0001" />
+    </body>
+
+    <!-- 【RM65机械臂适配修改】插孔位置调整 -->
+    <body name="socket_base" pos="0.45 0 0">
+      <geom name="socket" type="cylinder" size="0.03 0.04" pos="0 0 0.04" material="socket_material"
+        contype="0" conaffinity="0" />
+      <geom name="socket_wall_x_pos" type="box" size="0.006 0.03 0.04" pos="0.0235 0 0.04"
+        material="socket_material" contype="1" conaffinity="1" friction="0.8 0.005 0.0001" />
+      <geom name="socket_wall_x_neg" type="box" size="0.006 0.03 0.04" pos="-0.0235 0 0.04"
+        material="socket_material" contype="1" conaffinity="1" friction="0.8 0.005 0.0001" />
+      <geom name="socket_wall_y_pos" type="box" size="0.0175 0.006 0.04" pos="0 0.0235 0.04"
+        material="socket_material" contype="1" conaffinity="1" friction="0.8 0.005 0.0001" />
+      <geom name="socket_wall_y_neg" type="box" size="0.0175 0.006 0.04" pos="0 -0.0235 0.04"
+        material="socket_material" contype="1" conaffinity="1" friction="0.8 0.005 0.0001" />
+      <geom name="socket_hole" type="cylinder" size="0.0175 0.04" pos="0 0 0.04" rgba="0.1 0.1 0.1 1"
+        contype="0" conaffinity="0" />
+      <geom name="socket_base_plate" type="cylinder" size="0.03 0.005" pos="0 0 0" material="socket_material"
+        contype="1" conaffinity="1" />
+    </body>
+
+  </worldbody>
+</mujoco>

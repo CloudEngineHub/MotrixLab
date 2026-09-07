@@ -1,60 +1,47 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
 
 """SKRL Configuration Classes
 
 This module provides configuration classes for SKRL RL framework integration.
-The configuration structure matches template/skrl_config.yaml with a hierarchical
+The configuration structure matches configs/algo_base/skrl.ppo.yaml with a hierarchical
 design following the same pattern as RslrlConfig.
 
 Configuration Hierarchy:
-    SkrlCfg (top-level) -> SkrlRunnerCfg (runner-level)
+    SkrlCfg (top-level)
         -> SkrlModelsCfg (models)
             -> SkrlPolicyCfg (policy model)
             -> SkrlValueCfg (value model)
         -> SkrlMemoryCfg (memory)
         -> SkrlAgentCfg (PPO agent)
-            -> SkrlAgentExperimentCfg (experiment settings)
         -> SkrlTrainerCfg (trainer)
 """
 
 import dataclasses
 from dataclasses import dataclass, field
 
+from omegaconf import MISSING
+
 
 @dataclass
 class SkrlPolicyCfg:
     """Configuration for SKRL policy (GaussianMixin) model.
 
-    Corresponds to the policy section in template/skrl_config.yaml.
+    Corresponds to the policy section in configs/algo_base/skrl.ppo.yaml.
     """
 
-    class_name: str = "GaussianMixin"
-    clip_actions: bool = False
-    clip_log_std: bool = True
-    initial_log_std: float = 1.0
-    min_log_std: float = -20.0
-    max_log_std: float = 2.0
-    reduction: str = "sum"
-    input: str = "STATES"
-    hiddens: list[int] = field(default_factory=lambda: [256, 128, 64])
-    hidden_activation: list[str] = field(default_factory=lambda: ["elu"])
-    output: str = "ACTIONS"
-    output_activation: str = ""
-    output_scale: float = 1.0
+    clip_actions: bool = MISSING
+    clip_log_std: bool = MISSING
+    initial_log_std: float = MISSING
+    min_log_std: float = MISSING
+    max_log_std: float = MISSING
+    reduction: str = MISSING
+    input: str = MISSING
+    hiddens: list[int] = MISSING
+    hidden_activation: list[str] = MISSING
+    output: str = MISSING
+    output_activation: str = MISSING
+    output_scale: float = MISSING
 
     def _normalize_activations(self, num_layers: int) -> str | list[str]:
         """Normalize hidden_activation to match num_layers.
@@ -156,17 +143,16 @@ class SkrlPolicyCfg:
 class SkrlValueCfg:
     """Configuration for SKRL value (DeterministicMixin) model.
 
-    Corresponds to the value section in template/skrl_config.yaml.
+    Corresponds to the value section in configs/algo_base/skrl.ppo.yaml.
     """
 
-    class_name: str = "DeterministicMixin"
-    clip_actions: bool = False
-    input: str = "STATES"
-    hiddens: list[int] = field(default_factory=lambda: [256, 128, 64])
-    hidden_activation: list[str] = field(default_factory=lambda: ["elu"])
-    output: str = "ONE"
-    output_activation: str = ""
-    output_scale: float = 1.0
+    clip_actions: bool = MISSING
+    input: str = MISSING
+    hiddens: list[int] = MISSING
+    hidden_activation: list[str] = MISSING
+    output: str = MISSING
+    output_activation: str = MISSING
+    output_scale: float = MISSING
 
     def _normalize_activations(self, num_layers: int) -> str | list[str]:
         """Normalize hidden_activation to match num_layers.
@@ -268,10 +254,10 @@ class SkrlValueCfg:
 class SkrlModelsCfg:
     """Configuration for SKRL models section.
 
-    Corresponds to the models section in template/skrl_config.yaml.
+    Corresponds to the models section in configs/algo_base/skrl.ppo.yaml.
     """
 
-    separate: bool = False
+    separate: bool = MISSING
     policy: SkrlPolicyCfg = field(default_factory=SkrlPolicyCfg)
     value: SkrlValueCfg = field(default_factory=SkrlValueCfg)
 
@@ -288,11 +274,11 @@ class SkrlModelsCfg:
 class SkrlMemoryCfg:
     """Configuration for SKRL memory.
 
-    Corresponds to the memory section in template/skrl_config.yaml.
+    Corresponds to the memory section in configs/algo_base/skrl.ppo.yaml.
     """
 
-    class_name: str = "RandomMemory"
-    memory_size: int = -1  # -1: automatically determined
+    class_name: str = MISSING
+    memory_size: int = MISSING  # -1: automatically determined
 
     def to_dict(self) -> dict:
         """Convert to dict, mapping class_name to class."""
@@ -302,69 +288,54 @@ class SkrlMemoryCfg:
 
 
 @dataclass
-class SkrlAgentExperimentCfg:
-    """Experiment settings within agent config.
-
-    Corresponds to the experiment subsection in template/skrl_config.yaml.
-    """
-
-    directory: str = "runs"
-    experiment_name: str = ""
-    write_interval: int = -1
-    checkpoint_interval: int = -1
-
-
-@dataclass
 class SkrlAgentCfg:
     """Configuration for SKRL PPO agent.
 
-    Corresponds to the agent section in template/skrl_config.yaml.
+    Corresponds to the agent section in configs/algo_base/skrl.ppo.yaml.
     Field names match PPO_DEFAULT_CONFIG from SKRL.
     """
 
-    class_name: str = "PPO"
-    rollouts: int = 32
-    learning_epochs: int = 2
-    mini_batches: int = 32
-    discount_factor: float = 0.99
-    lam: float = 0.95
-    learning_rate: float = 1e-3
-    learning_rate_scheduler: str = "KLAdaptiveLR"
-    learning_rate_scheduler_kwargs: dict = field(default_factory=lambda: {"kl_threshold": 0.008})
-    random_timesteps: int = 0
-    learning_starts: int = 0
-    grad_norm_clip: float = 1.0
-    ratio_clip: float = 0.2
-    value_clip: float = 0.2
-    clip_predicted_values: bool = True
-    entropy_loss_scale: float = 0.0
-    value_loss_scale: float = 2.0
-    kl_threshold: int = 0
-    rewards_shaper_scale: float = 1.0
-    time_limit_bootstrap: bool = True
-    experiment: SkrlAgentExperimentCfg = field(default_factory=SkrlAgentExperimentCfg)
+    rollouts: int = MISSING
+    learning_epochs: int = MISSING
+    mini_batches: int = MISSING
+    discount_factor: float = MISSING
+    lam: float = MISSING
+    learning_rate: float = MISSING
+    # Optional: tasks disable the scheduler by setting this to None.
+    learning_rate_scheduler: str | None = MISSING
+    learning_rate_scheduler_kwargs: dict = MISSING
+    random_timesteps: int = MISSING
+    learning_starts: int = MISSING
+    grad_norm_clip: float = MISSING
+    ratio_clip: float = MISSING
+    value_clip: float = MISSING
+    # Kept for compatibility with existing task configs. SKRL 2.1 removed this option.
+    clip_predicted_values: bool = MISSING
+    entropy_loss_scale: float = MISSING
+    value_loss_scale: float = MISSING
+    kl_threshold: float = MISSING
+    rewards_shaper_scale: float = MISSING
+    time_limit_bootstrap: bool = MISSING
+    mixed_precision: bool = MISSING
 
     def to_dict(self) -> dict:
         """Convert configuration to dictionary for SKRL PPO agent.
 
         Returns:
             Dictionary representation matching SKRL's PPO agent configuration format.
-            Maps class_name -> class and lam -> lambda for SKRL compatibility.
+            Maps lam -> gae_lambda for SKRL 2.1 compatibility.
 
         Note:
-            - Maps 'class_name' to 'class' (SKRL convention)
-            - Maps 'lam' to 'lambda' (Python keyword conflict)
-            - Converts nested experiment config to dict
-            - Excludes state/value preprocessor fields (added dynamically during training)
+            Excludes runtime-owned experiment and preprocessor fields, which are
+            added dynamically during training or play.
         """
         # Build base configuration dict
         result = {
-            "class": self.class_name,
             "rollouts": self.rollouts,
             "learning_epochs": self.learning_epochs,
             "mini_batches": self.mini_batches,
             "discount_factor": self.discount_factor,
-            "lambda": self.lam,
+            "gae_lambda": self.lam,
             "learning_rate": self.learning_rate,
             "learning_rate_scheduler": self.learning_rate_scheduler,
             "learning_rate_scheduler_kwargs": self.learning_rate_scheduler_kwargs,
@@ -373,18 +344,12 @@ class SkrlAgentCfg:
             "grad_norm_clip": self.grad_norm_clip,
             "ratio_clip": self.ratio_clip,
             "value_clip": self.value_clip,
-            "clip_predicted_values": self.clip_predicted_values,
             "entropy_loss_scale": self.entropy_loss_scale,
             "value_loss_scale": self.value_loss_scale,
             "kl_threshold": self.kl_threshold,
             "rewards_shaper_scale": self.rewards_shaper_scale,
             "time_limit_bootstrap": self.time_limit_bootstrap,
-            "experiment": {
-                "directory": self.experiment.directory,
-                "experiment_name": self.experiment.experiment_name,
-                "write_interval": self.experiment.write_interval,
-                "checkpoint_interval": self.experiment.checkpoint_interval,
-            },
+            "mixed_precision": self.mixed_precision,
         }
 
         return result
@@ -394,11 +359,10 @@ class SkrlAgentCfg:
 class SkrlTrainerCfg:
     """Configuration for SKRL sequential trainer.
 
-    Corresponds to the trainer section in template/skrl_config.yaml.
+    Corresponds to the trainer section in configs/algo_base/skrl.ppo.yaml.
     """
 
-    class_name: str = "SequentialTrainer"
-    timesteps: int = 10000
+    timesteps: int = MISSING
     """
     The max number of batch env steps to run
     """
@@ -411,55 +375,17 @@ class SkrlTrainerCfg:
 
 
 @dataclass
-class SkrlRunnerCfg:
-    """Main SKRL runner configuration.
+class SkrlCfg:
+    """Top-level SKRL configuration.
 
-    This mirrors the structure in template/skrl_config.yaml.
-    Follows the same pattern as RslrlRunnerCfg with nested configs
-    and a to_dict() method for dictionary conversion.
+    Contains only provider-specific settings. Environment parallelism and the
+    authoritative seed live in the framework-owned task runtime config.
     """
 
-    seed: int = 42
     models: SkrlModelsCfg = field(default_factory=SkrlModelsCfg)
     memory: SkrlMemoryCfg = field(default_factory=SkrlMemoryCfg)
     agent: SkrlAgentCfg = field(default_factory=SkrlAgentCfg)
     trainer: SkrlTrainerCfg = field(default_factory=SkrlTrainerCfg)
-
-    def to_dict(self) -> dict:
-        """Convert config to dictionary for SKRL.
-
-        Returns:
-            Dictionary representation matching SKRL's expected format.
-            Maps class_name -> class for all nested configs.
-
-        Note:
-            This method ensures that the output dictionary matches the exact
-            structure of template/skrl_config.yaml, including the 'class' field
-            names (instead of 'class_name' used in Python to avoid keyword conflicts).
-        """
-        result = {
-            "seed": self.seed,
-            "models": self.models.to_dict(),
-            "memory": self.memory.to_dict(),
-            "agent": self.agent.to_dict(),
-            "trainer": self.trainer.to_dict(),
-        }
-        return result
-
-
-@dataclass
-class SkrlCfg:
-    """Top-level SKRL configuration.
-
-    Follows the same pattern as RslrlCfg with environment-level settings
-    at the top level and runner configuration nested.
-    """
-
-    # Basic training parameters
-    num_envs: int = 2048
-    play_num_envs: int = 16
-
-    runner: SkrlRunnerCfg = field(default_factory=SkrlRunnerCfg)
 
     def replace(self, **updates) -> "SkrlCfg":
         """Replace specified fields and return a new instance."""

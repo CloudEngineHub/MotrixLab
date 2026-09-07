@@ -1,5 +1,5 @@
 <mujoco model="anymal_c scene">
-  <include file="anymal_c.xml" />
+  <include file="../../../robot/assets/anymal_c/anymal_c.xml" />
 
   <visual>
     <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0" />
@@ -16,11 +16,25 @@
     <texture name="motphys-ground" type="2d" file="../../../common/motphys-ground.png" />
     <material name="motphys-ground" texture="motphys-ground" texuniform="true"
       texrepeat="0.4 0.4" />
+    <mesh name="arrow" file="assets/arrow.obj" />
+    <material name="target_green" rgba="0 1 0 0.9" />
   </asset>
 
   <worldbody>
     <light diffuse="0.6 0.6 0.6" pos="0 0 1.5"
       dir="-0.49835488200187683 0.2925136387348175 -0.8161361217498779" directional="true" />
     <geom name="ground" size="0 0 0.05" type="plane" material="motphys-ground" />
+    <body name="target_marker" pos="0 0 0.05" mocap="true">
+      <geom name="arrow_head" type="mesh" mesh="arrow" pos="0 0 0.09"
+        material="target_green" contype="0" conaffinity="0" />
+    </body>
+    <body name="robot_heading_arrow" pos="0 0 0.76" mocap="true">
+      <geom name="robot_arrow_head" type="mesh" mesh="arrow" pos="0.25 0 0.08"
+        rgba="0 1 0 0.8" contype="0" conaffinity="0" />
+    </body>
+    <body name="desired_heading_arrow" pos="0 0 0.76" mocap="true">
+      <geom name="desired_arrow_head" type="mesh" mesh="arrow" pos="0.25 0 0.08"
+        rgba="0 0 1 0.8" contype="0" conaffinity="0" />
+    </body>
   </worldbody>
 </mujoco>

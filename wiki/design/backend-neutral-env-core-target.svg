@@ -1,0 +1,210 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1125" viewBox="0 0 1600 1125" role="img"
+     aria-labelledby="title description">
+  <title id="title">EnvCore backend-neutral target architecture</title>
+  <desc id="description">
+    Target architecture centered on env_core: DirectEnv and ManagerEnv share one lifecycle, use a selectable
+    array runtime, and connect to simulator adapters through backend-neutral ports.
+  </desc>
+
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#0f172a" flood-opacity="0.09"/>
+    </filter>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7"
+            orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#3b82f6"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7"
+            orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#10b981"/>
+    </marker>
+    <marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7"
+            orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8b5cf6"/>
+    </marker>
+    <marker id="arrow-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7"
+            orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#f97316"/>
+    </marker>
+    <style>
+      .title { font: 700 34px Inter, "Noto Sans SC", "Microsoft YaHei", sans-serif; fill: #0f172a; }
+      .subtitle { font: 400 16px Inter, "Noto Sans SC", "Microsoft YaHei", sans-serif; fill: #64748b; }
+      .section-label { font: 700 14px Inter, "Noto Sans SC", "Microsoft YaHei", sans-serif; letter-spacing: 1.5px; }
+      .node-title { font: 700 18px Inter, "Noto Sans SC", "Microsoft YaHei", sans-serif; fill: #0f172a; }
+      .node-copy { font: 400 13px Inter, "Noto Sans SC", "Microsoft YaHei", sans-serif; fill: #64748b; }
+      .node-copy-dark { font: 500 13px Inter, "Noto Sans SC", "Microsoft YaHei", sans-serif; fill: #334155; }
+      .chip { font: 600 12px Inter, "Noto Sans SC", "Microsoft YaHei", sans-serif; fill: #475569; }
+      .small { font: 500 11px Inter, "Noto Sans SC", "Microsoft YaHei", sans-serif; fill: #64748b; }
+      .arrow-label { font: 600 11px Inter, "Noto Sans SC", "Microsoft YaHei", sans-serif; fill: #64748b; }
+      .config-arrow { fill: none; stroke: #3b82f6; stroke-width: 2.5; marker-end: url(#arrow-blue); }
+      .runtime-arrow { fill: none; stroke: #10b981; stroke-width: 3; marker-end: url(#arrow-green); }
+      .compile-arrow { fill: none; stroke: #8b5cf6; stroke-width: 2.5; marker-end: url(#arrow-purple); }
+      .task-arrow { fill: none; stroke: #f97316; stroke-width: 2.5; marker-end: url(#arrow-orange); }
+    </style>
+  </defs>
+
+  <rect width="1600" height="1170" fill="#f8fafc"/>
+
+  <text x="64" y="58" class="title">EnvCore 最终目标架构</text>
+  <text x="64" y="88" class="subtitle">统一 Env API；前端、数组运行时、编译器与仿真后端可组合</text>
+
+  <!-- Minimal consumer boundary -->
+  <g filter="url(#shadow)">
+    <rect x="560" y="116" width="480" height="68" rx="16" fill="#ffffff" stroke="#93c5fd"/>
+    <text x="800" y="143" text-anchor="middle" class="node-title">Application Consumers</text>
+    <text x="800" y="167" text-anchor="middle" class="node-copy">training · benchmarks · data synthesis · deployment</text>
+  </g>
+  <path d="M 800 184 V 238" class="config-arrow"/>
+
+  <!-- Core is the visual center -->
+  <rect x="55" y="215" width="1490" height="760" rx="26" fill="#eef2ff" stroke="#a5b4fc" stroke-width="2"/>
+  <rect x="82" y="238" width="202" height="30" rx="15" fill="#e0e7ff"/>
+  <text x="183" y="258" text-anchor="middle" class="section-label" fill="#4338ca">env_core</text>
+  <text x="310" y="259" class="node-copy-dark">执行、编译、仿真抽象</text>
+
+  <g filter="url(#shadow)">
+    <rect x="105" y="300" width="1390" height="76" rx="16" fill="#ffffff" stroke="#6ee7b7"/>
+    <rect x="105" y="300" width="8" height="76" rx="4" fill="#10b981"/>
+    <text x="138" y="329" class="node-title">Env Capabilities</text>
+    <text x="138" y="355" class="node-copy">reset · step · obs · reward · terminated / truncated · metrics</text>
+  </g>
+
+  <path d="M 365 376 V 448" class="runtime-arrow"/>
+  <path d="M 1045 376 V 448" class="runtime-arrow"/>
+
+  <!-- DirectEnv path -->
+  <rect x="95" y="450" width="540" height="282" rx="20" fill="#eff6ff" stroke="#93c5fd"/>
+  <rect x="118" y="471" width="204" height="28" rx="14" fill="#dbeafe"/>
+  <text x="220" y="490" text-anchor="middle" class="section-label" fill="#2563eb">DIRECTENV[ARRAYT]</text>
+  <text x="343" y="491" class="node-copy-dark">命令式前端</text>
+
+  <g filter="url(#shadow)">
+    <rect x="125" y="520" width="480" height="75" rx="14" fill="#ffffff" stroke="#60a5fa"/>
+    <text x="365" y="548" text-anchor="middle" class="node-title">DirectEnv Runtime[ArrayT]</text>
+    <text x="365" y="573" text-anchor="middle" class="node-copy">task hooks + step execution</text>
+  </g>
+
+  <path d="M 365 595 V 616" class="runtime-arrow"/>
+
+  <g filter="url(#shadow)">
+    <rect x="125" y="619" width="480" height="82" rx="14" fill="#ffffff" stroke="#fdba74"/>
+    <rect x="125" y="619" width="7" height="82" rx="3.5" fill="#f97316"/>
+    <text x="150" y="646" class="node-title">Task-defined Direct Hooks</text>
+    <text x="150" y="671" class="node-copy">apply · observe · reward · terminate</text>
+  </g>
+
+  <!-- ManagerEnv + replaceable compiler path -->
+  <rect x="665" y="450" width="830" height="282" rx="20" fill="#f5f3ff" stroke="#c4b5fd"/>
+  <rect x="688" y="471" width="246" height="28" rx="14" fill="#ede9fe"/>
+  <text x="811" y="490" text-anchor="middle" class="section-label" fill="#7c3aed">MANAGERENV[ARRAYT]</text>
+  <text x="954" y="491" class="node-copy-dark">声明式前端 + 可替换编译器</text>
+
+  <!-- Compile pipeline -->
+  <g filter="url(#shadow)">
+    <rect x="690" y="520" width="165" height="86" rx="14" fill="#ffffff" stroke="#fdba74"/>
+    <rect x="690" y="520" width="7" height="86" rx="3.5" fill="#f97316"/>
+    <text x="712" y="547" class="node-title">Cfg + Terms</text>
+    <text x="712" y="571" class="node-copy">term declarations</text>
+  </g>
+
+  <path d="M 855 563 H 872" class="compile-arrow"/>
+
+  <g filter="url(#shadow)">
+    <rect x="875" y="520" width="180" height="86" rx="14" fill="#ffffff" stroke="#c4b5fd"/>
+    <text x="965" y="547" text-anchor="middle" class="node-title">ManagerContext</text>
+    <text x="965" y="571" text-anchor="middle" class="node-copy">normalized context</text>
+  </g>
+
+  <path d="M 1055 563 H 1072" class="compile-arrow"/>
+
+  <g filter="url(#shadow)">
+    <rect x="1075" y="510" width="200" height="106" rx="14" fill="#ffffff" stroke="#a78bfa"/>
+    <text x="1175" y="537" text-anchor="middle" class="node-title" style="font-size:15px">ProgramCompiler SPI</text>
+    <rect x="1091" y="555" width="80" height="39" rx="10" fill="#f5f3ff"/>
+    <text x="1131" y="571" text-anchor="middle" class="small">Numba</text>
+    <text x="1131" y="586" text-anchor="middle" class="small">current</text>
+    <rect x="1179" y="555" width="80" height="39" rx="10" fill="#f5f3ff"/>
+    <text x="1219" y="571" text-anchor="middle" class="small">Torch</text>
+    <text x="1219" y="586" text-anchor="middle" class="small">planned</text>
+    <text x="1175" y="608" text-anchor="middle" class="small">lower + codegen</text>
+  </g>
+
+  <path d="M 1275 563 H 1292" class="compile-arrow"/>
+
+  <g filter="url(#shadow)">
+    <rect x="1295" y="510" width="175" height="106" rx="14" fill="#ffffff" stroke="#8b5cf6" stroke-width="2"/>
+    <text x="1382" y="536" text-anchor="middle" class="node-title" style="font-size:15px">Compiled</text>
+    <text x="1382" y="555" text-anchor="middle" class="node-title" style="font-size:15px">ManagerProgram</text>
+    <text x="1382" y="577" text-anchor="middle" class="node-copy-dark">[ArrayT] · artifact</text>
+  </g>
+
+  <path d="M 1382 616 V 628 H 1080 V 637" class="compile-arrow"/>
+
+  <g filter="url(#shadow)">
+    <rect x="715" y="637" width="730" height="64" rx="14" fill="#ffffff" stroke="#a78bfa"/>
+    <text x="1080" y="663" text-anchor="middle" class="node-title">ManagerEnv</text>
+    <text x="1080" y="686" text-anchor="middle" class="node-copy">read · evaluate · observe · reset</text>
+  </g>
+
+  <!-- Both frontends converge on the selected environment array runtime -->
+  <path d="M 365 701 V 755" class="runtime-arrow"/>
+  <path d="M 1080 701 V 755" class="runtime-arrow"/>
+
+  <g filter="url(#shadow)">
+    <rect x="105" y="755" width="1390" height="78" rx="16" fill="#ecfeff" stroke="#2dd4bf" stroke-width="2"/>
+    <text x="135" y="784" class="node-title">Shared Array Runtime (target)</text>
+    <text x="135" y="809" class="node-copy-dark">common array ops · dtype / device · masking · allocation · buffers</text>
+    <rect x="1110" y="772" width="150" height="38" rx="12" fill="#ffffff" stroke="#67e8f9"/>
+    <text x="1185" y="788" text-anchor="middle" class="chip">NumPy · current</text>
+    <text x="1185" y="803" text-anchor="middle" class="small">CPU</text>
+    <rect x="1275" y="772" width="185" height="38" rx="12" fill="#ffffff" stroke="#67e8f9"/>
+    <text x="1367" y="788" text-anchor="middle" class="chip">Torch · target</text>
+    <text x="1367" y="803" text-anchor="middle" class="small">CPU · CUDA</text>
+  </g>
+
+  <path d="M 800 833 V 846" class="runtime-arrow"/>
+
+  <g filter="url(#shadow)">
+    <rect x="105" y="850" width="1390" height="100" rx="16" fill="#faf5ff" stroke="#8b5cf6" stroke-width="2"/>
+    <text x="135" y="908" class="node-title">SimBackend</text>
+    <rect x="280" y="871" width="180" height="58" rx="13" fill="#eff6ff" stroke="#93c5fd"/>
+    <text x="370" y="895" text-anchor="middle" class="node-title" style="font-size:15px">Scene compile</text>
+    <text x="370" y="916" text-anchor="middle" class="small">SceneCfg → model</text>
+    <rect x="470" y="871" width="180" height="58" rx="13" fill="#ffffff" stroke="#c4b5fd"/>
+    <text x="560" y="895" text-anchor="middle" class="node-title" style="font-size:15px">Model queries</text>
+    <text x="560" y="916" text-anchor="middle" class="small">model_query_compiler</text>
+    <rect x="660" y="871" width="180" height="58" rx="13" fill="#ffffff" stroke="#c4b5fd"/>
+    <text x="750" y="895" text-anchor="middle" class="node-title" style="font-size:15px">Read program</text>
+    <text x="750" y="916" text-anchor="middle" class="small">compile_reads</text>
+    <rect x="850" y="871" width="180" height="58" rx="13" fill="#ffffff" stroke="#c4b5fd"/>
+    <text x="940" y="895" text-anchor="middle" class="node-title" style="font-size:15px">Write / reset</text>
+    <text x="940" y="916" text-anchor="middle" class="small">write_compiler</text>
+    <rect x="1040" y="871" width="180" height="58" rx="13" fill="#ffffff" stroke="#c4b5fd"/>
+    <text x="1130" y="895" text-anchor="middle" class="node-title" style="font-size:15px">Physics step</text>
+    <text x="1130" y="916" text-anchor="middle" class="small">step(substeps)</text>
+    <rect x="1230" y="871" width="180" height="58" rx="13" fill="#ffffff" stroke="#c4b5fd"/>
+    <text x="1320" y="895" text-anchor="middle" class="node-title" style="font-size:15px">Renderer (opt.)</text>
+    <text x="1320" y="916" text-anchor="middle" class="small">create_renderer</text>
+  </g>
+
+  <!-- Minimal backend boundary -->
+  <path d="M 800 950 V 995" class="compile-arrow"/>
+  <rect x="290" y="1000" width="1020" height="65" rx="18" fill="#ecfdf5" stroke="#6ee7b7"/>
+  <text x="330" y="1027" class="section-label" fill="#047857">SIMULATOR BACKENDS</text>
+  <text x="330" y="1051" class="node-copy">按 backend 能力实现</text>
+  <rect x="680" y="1017" width="150" height="31" rx="15.5" fill="#ffffff" stroke="#6ee7b7"/>
+  <text x="755" y="1037" text-anchor="middle" class="chip">MotrixSim · live</text>
+  <rect x="850" y="1017" width="150" height="31" rx="15.5" fill="#ffffff" stroke="#6ee7b7"/>
+  <text x="925" y="1037" text-anchor="middle" class="chip">MuJoCo · compile-only</text>
+  <rect x="1020" y="1017" width="250" height="31" rx="15.5" fill="#ffffff" stroke="#6ee7b7"/>
+  <text x="1145" y="1037" text-anchor="middle" class="chip">Isaac Sim / Warp · future</text>
+
+  <!-- Compact legend -->
+  <line x1="55" y1="1100" x2="89" y2="1100" class="runtime-arrow"/>
+  <text x="100" y="1104" class="small">runtime</text>
+  <line x1="210" y1="1100" x2="244" y2="1100" class="compile-arrow"/>
+  <text x="255" y="1104" class="small">compile / ports</text>
+  <line x1="390" y1="1100" x2="424" y2="1100" class="task-arrow"/>
+  <text x="435" y="1104" class="small">task semantics</text>
+  <text x="1545" y="1104" text-anchor="end" class="subtitle">EnvCore · Target Architecture</text>
+</svg>

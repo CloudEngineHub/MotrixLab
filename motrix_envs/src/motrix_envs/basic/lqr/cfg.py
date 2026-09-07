@@ -1,30 +1,20 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
 
 import os
-from dataclasses import dataclass
 
-from motrix_envs import registry
-from motrix_envs.base import EnvCfg
+from motrix_env_core import registry
+from motrix_env_core.base import SimCfg
+from motrix_env_core.config import configclass
+from motrix_env_core.config.scene import SceneCfg
+from motrix_env_core.direct.env import DirectEnvCfg
 
 _DIR = os.path.dirname(__file__)
 
 
-@dataclass
-class LqrBaseCfg(EnvCfg):
-    sim_dt: float = 0.01
+@configclass
+class LqrBaseCfg(DirectEnvCfg):
+    sim: SimCfg = SimCfg(dt=0.01)
     ctrl_dt: float = 0.03
     max_episode_seconds: float = None
     control_cost_coef: float = 0.1
@@ -41,9 +31,14 @@ class LqrBaseCfg(EnvCfg):
 
 
 @registry.envcfg("dm-lqr-2-1")
-@dataclass
+@configclass
 class Lqr21Cfg(LqrBaseCfg):
-    model_file: str = os.path.join(_DIR, "lqr_2_1.xml")
+    """Stabilize a linear system with two state and one control dimensions.
+
+    zh_CN: 稳定具有 2 维状态和 1 维控制的线性系统。
+    """
+
+    scene: SceneCfg = SceneCfg(file=os.path.join(_DIR, "lqr_2_1.xml"))
     reset_position_norm: float = 0.8
     control_cost_coef: float = 0.15
     velocity_cost_coef: float = 0.15
@@ -58,9 +53,14 @@ class Lqr21Cfg(LqrBaseCfg):
 
 
 @registry.envcfg("dm-lqr-6-2")
-@dataclass
+@configclass
 class Lqr62Cfg(LqrBaseCfg):
-    model_file: str = os.path.join(_DIR, "lqr_6_2.xml")
+    """Stabilize a linear system with six state and two control dimensions.
+
+    zh_CN: 稳定具有 6 维状态和 2 维控制的线性系统。
+    """
+
+    scene: SceneCfg = SceneCfg(file=os.path.join(_DIR, "lqr_6_2.xml"))
     reset_position_norm: float = 1.0
     velocity_cost_coef: float = 0.08
     boundary_position_limit: float = 1.2

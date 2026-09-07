@@ -1,0 +1,18 @@
+# @package _global_
+# Task dm-quadruped-fetch: skrl.ppo shared training recipe.
+defaults:
+  - /algo_base@algo: skrl.ppo
+  - _self_
+task:
+  env: dm-quadruped-fetch
+  rllib: skrl
+  algo: ppo
+  train_backend: null
+num_envs: 2048
+play_num_envs: 16
+seed: 42
+algo:
+  agent:
+    rollouts: 24
+    learning_rate: 0.0002
+    learning_epochs: 4

@@ -1,0 +1,97 @@
+# Source-of-truth base values for the motrix.fastsac provider.
+# Framework-neutral runtime settings live in the task recipe root.
+defaults:
+  # Load the shared structured FastSacCfg schema registered by the Motrix provider.
+  - _motrix_fastsac_schema
+  # Apply the values in this file after the schema.
+  - _self_
+# Learning device such as cuda, cuda:0, or cpu; null selects CUDA when available, otherwise CPU.
+device: null
+# Use the heterogeneous collector/learner trainer instead of the synchronous trainer.
+asynchronous: true
+agent:
+  # AdamW learning rate for the actor network.
+  actor_learning_rate: 0.0003
+  # AdamW learning rate for the distributional critic networks.
+  critic_learning_rate: 0.0003
+  # AdamW learning rate for the automatically tuned entropy temperature.
+  alpha_learning_rate: 0.0003
+  # AdamW weight-decay coefficient for actor and critic parameters.
+  weight_decay: 0.001
+  # Maximum actor/critic gradient norm; values <= 0 disable gradient clipping.
+  max_grad_norm: 0.0
+  # Hidden width used by the actor network.
+  actor_hidden_dim: 512
+  # Hidden width used by each critic network.
+  critic_hidden_dim: 768
+  # Number of distributional Q networks in the critic ensemble.
+  num_q_networks: 2
+  # Apply LayerNorm in actor and critic hidden blocks.
+  use_layer_norm: true
+  # Squash Gaussian policy samples with tanh before mapping them to the action range.
+  use_tanh: true
+  # Upper clamp for the actor's predicted log standard deviation.
+  log_std_max: 0.0
+  # Lower clamp for the actor's predicted log standard deviation.
+  log_std_min: -5.0
+  # Number of categorical atoms used by each C51 distributional critic.
+  num_atoms: 101
+  # Lower bound of the categorical value support.
+  v_min: -20.0
+  # Upper bound of the categorical value support.
+  v_max: 20.0
+  # Reward discount factor gamma.
+  gamma: 0.97
+  # Soft target-network update coefficient.
+  tau: 0.125
+  # Initial entropy-temperature alpha.
+  alpha_init: 0.001
+  # Automatically optimize alpha toward the target entropy.
+  use_autotune: true
+  # Target entropy is computed as -action_dim * target_entropy_ratio.
+  target_entropy_ratio: 0.0
+  # Replay-buffer capacity per parallel environment.
+  buffer_size: 1024
+  # Number of transitions accumulated in each n-step return.
+  num_steps: 1
+  # Global sampled batch size; internally divided across parallel environments.
+  batch_size: 8192
+  # Collector iterations completed before learner updates begin.
+  learning_starts: 10
+  # Update the actor once every N critic gradient updates.
+  policy_frequency: 4
+  # Base number of gradient updates used by the selected UTD mode.
+  num_updates: 8
+  # Normalize actor and privileged critic observations using running statistics.
+  obs_normalization: true
+  # Compile actor and critic networks with torch.compile on CUDA; automatically disabled on CPU.
+  compile: true
+  # Enable CUDA automatic mixed precision; automatically disabled on CPU.
+  amp: true
+  # Autocast dtype used when AMP is enabled: bf16 or fp16.
+  amp_dtype: bf16
+trainer:
+  # Target collector iterations; each iteration collects num_envs transitions.
+  num_learning_iterations: 10000
+  # Settings consumed only by the asynchronous collector/learner trainer.
+  async_options:
+    # Shared-memory ring slots between collector and learner; each slot stores one num_envs transition batch.
+    ring_capacity: 64
+    # Update-to-data policy: strict or learner_bound.
+    utd_mode: strict
+    # Learner gradient-update interval for publishing actor weights and observation-normalizer statistics.
+    weight_publish_interval: 4
+    # Collector environment-step interval for checking whether newer weights are available.
+    weight_poll_interval: 1
+    # Maximum shared-ring slots moved into the learner replay buffer per learner loop.
+    max_ingest_per_iter: 8
+    # Backoff sleep in seconds when a worker temporarily has no work or the ring is full.
+    idle_sleep_s: 0.0005
+    # Actor-only collector inference device; the environment and transition path always remain on CPU.
+    collector_inference_device: cuda
+    # Compile the fixed-shape CUDA collector policy with reduce-overhead mode.
+    collector_compile: true
+    # Use the measured best-throughput FP16 CUDA collector path by default.
+    collector_amp: true
+    # Collector autocast dtype: fp16 or bf16.
+    collector_amp_dtype: fp16

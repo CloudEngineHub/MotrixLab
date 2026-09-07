@@ -1,52 +1,47 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
 
 """Configuration for Shadow Hand Cube Reorientation Environment"""
 
 import os
-from dataclasses import dataclass
-from typing import List, Tuple
 
-from motrix_envs import registry
-from motrix_envs.base import EnvCfg
+from motrix_env_core import registry
+from motrix_env_core.base import SimCfg
+from motrix_env_core.config import configclass
+from motrix_env_core.config.scene import SceneCfg
+from motrix_env_core.direct.env import DirectEnvCfg
 
 # Path to the repose_cube.xml model
 model_file = os.path.join(os.path.dirname(__file__), "xmls", "repose_cube.xml")
 
+_FINGERTIP_LINKS = (
+    "rh_ffdistal",  # First finger (index) distal
+    "rh_mfdistal",  # Middle finger distal
+    "rh_rfdistal",  # Ring finger distal
+    "rh_lfdistal",  # Little finger distal
+    "rh_thdistal",  # Thumb distal
+)
+
 
 @registry.envcfg("shadow-hand-repose")
-@dataclass
-class ShadowHandReposeEnvCfg(EnvCfg):
-    """
-    Configuration for Shadow Hand Cube Reorientation Environment
+@configclass
+class ShadowHandReposeEnvCfg(DirectEnvCfg):
+    """Control a Shadow Hand to reorient a cube in-hand.
 
-    This environment trains the Shadow Hand to reorient a cube to match
-    randomly sampled target orientations.
+    zh_CN: 控制 Shadow Hand 在手中重定向立方体。
     """
 
     # ====================
-    # Model Configuration
+    # Scene Configuration
     # ====================
-    model_file: str = model_file
+    scene: SceneCfg = SceneCfg(file=model_file)
 
     # ====================
     # Simulation Parameters
     # ====================
-    sim_dt: float = 0.01
+    sim: SimCfg = SimCfg(dt=0.01)
     sim_substeps: int = 1  # Number of simulation steps per control step
-    ctrl_dt: float = sim_dt * sim_substeps
+    ctrl_dt: float = 0.01 * sim_substeps
 
     max_episode_seconds: float = 10.0
     max_episode_steps: int = int(max_episode_seconds / ctrl_dt)
@@ -58,7 +53,7 @@ class ShadowHandReposeEnvCfg(EnvCfg):
     num_actuators: int = 20  # Actuated joints
 
     # Fingertip link names for forward kinematics
-    fingertip_link_names: List[str] = (
+    fingertip_link_names: list[str] = (
         "rh_ffdistal",  # First finger (index) distal
         "rh_mfdistal",  # Middle finger distal
         "rh_rfdistal",  # Ring finger distal
@@ -69,7 +64,7 @@ class ShadowHandReposeEnvCfg(EnvCfg):
     # ====================
     # Object Configuration
     # ====================
-    cube_initial_pos: Tuple[float, float, float] = (0.33, 0.00, 0.295)  # Initial cube position
+    cube_initial_pos: tuple[float, float, float] = (0.33, 0.00, 0.295)  # Initial cube position
 
     # ====================
     # Reward Parameters
@@ -119,7 +114,7 @@ class ShadowHandReposeEnvCfg(EnvCfg):
     # ====================
     # Offset for target visualization (relative to hand position)
     # Recommended: offset to upper-left to avoid occluding the real hand and cube
-    viz_target_offset: Tuple[float, float, float] = (
+    viz_target_offset: tuple[float, float, float] = (
         0.0,  # Left (negative X)
         0.0,  # Forward/Up (negative Y)
         0.2,  # Up (positive Z)
@@ -133,10 +128,10 @@ class ShadowHandReposeEnvCfg(EnvCfg):
 
     # Randomization parameters (only used if enable_domain_randomization=True)
     randomize_friction: bool = False
-    friction_range: Tuple[float, float] = (0.8, 12)
+    friction_range: tuple[float, float] = (0.8, 12)
 
     randomize_mass: bool = False
-    mass_range: Tuple[float, float] = (0.8, 1.2)
+    mass_range: tuple[float, float] = (0.8, 1.2)
 
     randomize_com: bool = False
     com_displacement_range: float = 0.01

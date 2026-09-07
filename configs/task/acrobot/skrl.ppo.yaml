@@ -1,0 +1,37 @@
+# @package _global_
+# Task acrobot: skrl.ppo shared training recipe.
+defaults:
+  - /algo_base@algo: skrl.ppo
+  - _self_
+task:
+  env: acrobot
+  rllib: skrl
+  algo: ppo
+  train_backend: null
+num_envs: 2048
+play_num_envs: 16
+seed: 42
+algo:
+  models:
+    value:
+      hiddens:
+        - 64
+        - 64
+    policy:
+      hiddens:
+        - 64
+        - 64
+  agent:
+    rollouts: 64
+    mini_batches: 8
+    rewards_shaper_scale: 0.1
+    ratio_clip: 0.15
+    learning_epochs: 4
+    grad_norm_clip: 0.5
+    learning_rate_scheduler_kwargs:
+      kl_threshold: 0.01
+    kl_threshold: 0.02
+    value_loss_scale: 0.5
+    learning_rate: 0.0005
+  trainer:
+    timesteps: 60000000

@@ -1,56 +1,97 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
 
 import gymnasium as gym
-import motrixsim as mtx
 import numpy as np
 
-from motrix_envs import registry
-from motrix_envs.math import quaternion
-from motrix_envs.np.env import NpEnv, NpEnvState
+from motrix_env_core import registry
+from motrix_env_core.array.env import ArrayEnvState
+from motrix_env_core.direct.env import DirectEnv
+from motrix_env_core.math import quaternion
+from motrix_env_core.sim import (
+    ActuatorCtrlQuery,
+    BodyAngularVelocityWrite,
+    BodyJointPositionQuery,
+    BodyJointPositionWrite,
+    BodyJointVelocityQuery,
+    BodyLinearVelocityWrite,
+    BodyPositionWrite,
+    BodyRotationWrite,
+    GeomPairCollidingQuery,
+    GeomSpecsQuery,
+    LinkPositionQuery,
+    LinkQuaternionQuery,
+    SensorValuesQuery,
+)
+from motrix_env_core.sim.write import BodyJointVelocityWrite, CtrlTargetsWrite, MocapPoseWrite
 
 from .cfg import AnymalCEnvCfg
 
 
-@registry.env("anymal_c_navigation_flat", "np")
-class AnymalCEnv(NpEnv):
+def _sim_data_queries(cfg: AnymalCEnvCfg):
+    return {
+        "robot_joint_pos": BodyJointPositionQuery(body=cfg.asset.body_name),
+        "robot_joint_vel": BodyJointVelocityQuery(body=cfg.asset.body_name),
+        "actuator_ctrls": ActuatorCtrlQuery(),
+        "root_pos": LinkPositionQuery(link="base"),
+        "root_quat": LinkQuaternionQuery(link="base"),
+        "base_linvel": SensorValuesQuery(sensors=("base_linvel",)),
+        "base_gyro": SensorValuesQuery(sensors=("base_gyro",)),
+        "termination_colliding": GeomPairCollidingQuery(pairs=(("base", "ground"),)),
+    }
+
+
+def _sim_model_queries(cfg: AnymalCEnvCfg):
+    return {
+        "geoms": GeomSpecsQuery(
+            names=(cfg.asset.ground_name, *cfg.asset.terminate_after_contacts_on, *cfg.asset.foot_names)
+        )
+    }
+
+
+@registry.env("anymal_c_navigation_flat")
+class AnymalCEnv(DirectEnv):
     _cfg: AnymalCEnvCfg
 
-    def __init__(self, cfg: AnymalCEnvCfg, num_envs: int = 1):
-        super().__init__(cfg, num_envs=num_envs)
+    def __init__(self, cfg: AnymalCEnvCfg, num_envs=1, backend: str | None = None):
+        super().__init__(cfg, num_envs, backend=backend)
+        self.model = self.sim.compile_model(_sim_model_queries(cfg))
+        self.sim_data = self.sim.compile_reads(_sim_data_queries(cfg))
+        self._heading_writes = self.sim.write_compiler.compile(
+            {
+                "robot": MocapPoseWrite(("robot_heading_arrow",)),
+                "desired": MocapPoseWrite(("desired_heading_arrow",)),
+            },
+        )
+        self._target_writes = self.sim.write_compiler.compile({"target": MocapPoseWrite(("target_marker",))})
+        self._ctrl_writes = self.sim.write_compiler.compile({"ctrl": CtrlTargetsWrite()})
+        self._reset_program = self.sim.write_compiler.compile(
+            {
+                "base_position": BodyPositionWrite((cfg.asset.body_name,)),
+                "base_rotation": BodyRotationWrite((cfg.asset.body_name,)),
+                "base_linear_velocity": BodyLinearVelocityWrite((cfg.asset.body_name,)),
+                "base_angular_velocity": BodyAngularVelocityWrite((cfg.asset.body_name,)),
+                "joints_position": BodyJointPositionWrite(cfg.asset.body_name),
+                "joints_velocity": BodyJointVelocityWrite(cfg.asset.body_name),
+            },
+            reset=True,
+        )
+        self._reset_position = self._reset_program.buffer("base_position")[:, 0]
+        self._reset_rotation = self._reset_program.buffer("base_rotation")[:, 0]
+        self._reset_linear_velocity = self._reset_program.buffer("base_linear_velocity")[:, 0]
+        self._reset_angular_velocity = self._reset_program.buffer("base_angular_velocity")[:, 0]
+        self._reset_joint_position = self._reset_program.buffer("joints_position")
+        self._reset_joint_velocity = self._reset_program.buffer("joints_velocity")
 
-        self._body = self._model.get_body(cfg.asset.body_name)
         self._init_contact_geometry()
-
-        # Get target marker body
-        self._target_marker_body = self._model.get_body("target_marker")
 
         self._action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(12,), dtype=np.float32)
         # Observation space: linvel(3) + gyro(3) + gravity(3) + joint_pos(12) + joint_vel(12) + last_actions(12) +
         # commands(3) + position_error(2) + heading_error(1) + distance(1) + reached_flag(1) + stop_ready_flag(1) = 54
         self._observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(54,), dtype=np.float32)
-        self._num_dof_pos = self._model.num_dof_pos
-        self._num_dof_vel = self._model.num_dof_vel
-        self._num_action = self._model.num_actuators
+        self._num_action = self.num_actuators
 
-        self._init_dof_pos = self._model.compute_init_dof_pos()
-        self._init_dof_vel = np.zeros(
-            (self._model.num_dof_vel,),
-            dtype=np.float32,
-        )
+        self._init_base_pose = self.model.init_dof_pos[:7].copy()
 
         self._init_buffer()
 
@@ -65,19 +106,20 @@ class AnymalCEnv(NpEnv):
         )
 
         # Set default joint angles
-        for i in range(self._model.num_actuators):
+        actuator_names = [spec.name for spec in self.model.actuators]
+        for i in range(self.num_actuators):
             for name, angle in cfg.init_state.default_joint_angles.items():
-                if name in self._model.actuator_names[i]:
+                if name in actuator_names[i]:
                     self.default_angles[i] = angle
 
-        self._init_dof_pos[-self._num_action :] = self.default_angles
+        self._init_joint_position = self.default_angles.copy()
 
     def _init_contact_geometry(self):
-        """Initialize geometry indices required for contact detection"""
+        """Initialize geometry name pairs required for contact detection"""
         cfg = self._cfg
-        self.ground_index = self._model.get_geom_index(cfg.asset.ground_name)
+        self.ground_name = cfg.asset.ground_name
 
-        # Initialize contact detection matrix
+        # Initialize contact detection pairs
         self._init_termination_contact()
         self._init_foot_contact()
 
@@ -85,66 +127,48 @@ class AnymalCEnv(NpEnv):
         """Initialize termination contact detection"""
         cfg = self._cfg
         # Find base geometries
-        base_indices = []
+        base_names = []
         for base_name in cfg.asset.terminate_after_contacts_on:
-            try:
-                base_idx = self._model.get_geom_index(base_name)
-                if base_idx is not None:
-                    base_indices.append(base_idx)
-                else:
-                    print(f"Warning: Geom '{base_name}' not found in model")
-            except Exception as e:
-                print(f"Warning: Error finding base geom '{base_name}': {e}")
+            if base_name in self.model.others["geoms"]:
+                base_names.append(base_name)
+            else:
+                print(f"Warning: Geom '{base_name}' not found in model")
 
-        # Create base-ground contact detection matrix
-        if base_indices:
-            self.termination_contact = np.array([[idx, self.ground_index] for idx in base_indices], dtype=np.uint32)
-            self.num_termination_check = self.termination_contact.shape[0]
+        # Create base-ground contact detection pairs
+        if base_names:
+            self.termination_contact = tuple((name, self.ground_name) for name in base_names)
+            self.num_termination_check = len(self.termination_contact)
         else:
-            # Use empty array
-            self.termination_contact = np.zeros((0, 2), dtype=np.uint32)
+            # Use empty inventory
+            self.termination_contact = ()
             self.num_termination_check = 0
             print("Warning: No base contacts configured for termination")
 
     def _init_foot_contact(self):
         """Initialize foot contact detection"""
         cfg = self._cfg
-        foot_indices = []
+        foot_names = []
         for foot_name in cfg.asset.foot_names:
-            try:
-                foot_idx = self._model.get_geom_index(foot_name)
-                if foot_idx is not None:
-                    foot_indices.append(foot_idx)
-                else:
-                    print(f"Warning: Foot geom '{foot_name}' not found in model")
-            except Exception as e:
-                print(f"Warning: Error finding foot geom '{foot_name}': {e}")
+            if foot_name in self.model.others["geoms"]:
+                foot_names.append(foot_name)
+            else:
+                print(f"Warning: Foot geom '{foot_name}' not found in model")
 
-        # Create foot-ground contact detection matrix
-        if foot_indices:
-            self.foot_contact_check = np.array([[idx, self.ground_index] for idx in foot_indices], dtype=np.uint32)
-            self.num_foot_check = self.foot_contact_check.shape[0]
+        # Create foot-ground contact detection pairs (kept for parity with the
+        # legacy inventory; no observation reads them yet)
+        if foot_names:
+            self.foot_contact_check = tuple((name, self.ground_name) for name in foot_names)
+            self.num_foot_check = len(self.foot_contact_check)
         else:
-            self.foot_contact_check = np.zeros((0, 2), dtype=np.uint32)
+            self.foot_contact_check = ()
             self.num_foot_check = 0
             print("Warning: No foot contacts configured")
 
-    def get_dof_pos(self, data: mtx.SceneData):
-        return self._body.get_joint_dof_pos(data)
+    def get_dof_pos(self):
+        return self.sim_data["robot_joint_pos"]
 
-    def get_dof_vel(self, data: mtx.SceneData):
-        return self._body.get_joint_dof_vel(data)
-
-    def _extract_root_state(self, data):
-        """
-        Extract root state from self._body
-        """
-        pose = self._body.get_pose(data)
-        root_pos = pose[:, :3]
-        root_quat = pose[:, 3:7]
-        # Get velocity from sensor
-        root_linvel = self._model.get_sensor_value(self._cfg.sensor.base_linvel, data)
-        return root_pos, root_quat, root_linvel
+    def get_dof_vel(self):
+        return self.sim_data["robot_joint_vel"]
 
     @property
     def observation_space(self):
@@ -154,7 +178,7 @@ class AnymalCEnv(NpEnv):
     def action_space(self):
         return self._action_space
 
-    def apply_action(self, actions: np.ndarray, state: NpEnvState):
+    def apply_action(self, actions: np.ndarray, state: ArrayEnvState):
         # Save current action for incremental control
         if "current_action" not in state.info:
             state.info["current_actions"] = np.zeros_like(actions)
@@ -163,69 +187,67 @@ class AnymalCEnv(NpEnv):
 
         # Position control mode: directly input target angles
         actions_scaled = actions * self._cfg.control_config.action_scale
-        state.data.actuator_ctrls = self.default_angles + actions_scaled
+        ctrl = self._ctrl_writes.buffer("ctrl")
+        ctrl[:] = np.asarray(self.default_angles + actions_scaled, dtype=np.float32)
+        self._ctrl_writes.execute()
         return state
 
-    def update_state(self, state: NpEnvState):
-        data = state.data
+    def _navigation_state(self, info: dict):
+        """Derive navigation commands from cached sim reads and pose commands.
 
-        # Get root state
-        root_pos, root_quat, root_vel = self._extract_root_state(data)
+        Pure physics-derived quantities shared by ``compute_transition``
+        (reward / markers) and ``compute_observation``: position error, wrapped
+        heading error, distance to target, reached mask, desired velocities.
+        """
+        root_pos = self.sim_data["root_pos"]
+        root_quat = self.sim_data["root_quat"]
+        pose_commands = info["pose_commands"]
 
-        # Joint states (leg joints)
-        joint_pos = self.get_dof_pos(data)  # [num_envs, 12]
-        joint_vel = self.get_dof_vel(data)  # [num_envs, 12]
-        joint_pos_rel = joint_pos - self.default_angles
-
-        # Get sensor data
-        base_lin_vel = root_vel[:, :3]
-        gyro = self._model.get_sensor_value(self._cfg.sensor.base_gyro, data)
-        projected_gravity = self._compute_projected_gravity(root_quat)
-
-        # Get commands - convert to relative velocity commands
-        pose_commands = state.info["pose_commands"]
         robot_position = root_pos[:, :2]
         robot_heading = quaternion.get_yaw(root_quat)
         target_position = pose_commands[:, :2]
         target_heading = pose_commands[:, 2]
 
-        # Calculate desired velocity (based on position error)
         position_error = target_position - robot_position
         distance_to_target = np.linalg.norm(position_error, axis=1)
 
-        position_threshold = 0.3
-        reached_position = distance_to_target < position_threshold
-
-        desired_vel_xy = np.clip(position_error * 1.0, -1.0, 1.0)  # Simple P controller
-        desired_vel_xy = np.where(reached_position[:, np.newaxis], 0.0, desired_vel_xy)  # Velocity is 0 after reaching
-
-        # Calculate desired angular velocity (based on heading error)
         heading_diff = target_heading - robot_heading
         heading_diff = np.where(heading_diff > np.pi, heading_diff - 2 * np.pi, heading_diff)
         heading_diff = np.where(heading_diff < -np.pi, heading_diff + 2 * np.pi, heading_diff)
-        heading_threshold = np.deg2rad(15)
-        reached_heading = np.abs(heading_diff) < heading_threshold
 
-        reached_all = np.logical_and(reached_position, reached_heading)
+        position_threshold = 0.3
+        heading_threshold = np.deg2rad(15)
+        reached_all = np.logical_and(distance_to_target < position_threshold, np.abs(heading_diff) < heading_threshold)
+
+        desired_vel_xy = np.clip(position_error * 1.0, -1.0, 1.0)  # Simple P controller
+        desired_vel_xy = np.where(reached_all[:, np.newaxis], 0.0, desired_vel_xy)
 
         # Angular velocity command calculation + deadband
-        desired_yaw_rate = np.clip(heading_diff * 1.0, -1.0, 1.0)
         deadband_yaw = np.deg2rad(8)
+        desired_yaw_rate = np.clip(heading_diff * 1.0, -1.0, 1.0)
         desired_yaw_rate = np.where(np.abs(heading_diff) < deadband_yaw, 0.0, desired_yaw_rate)
-
-        # Reset to zero after reaching
         desired_yaw_rate = np.where(reached_all, 0.0, desired_yaw_rate)
-        desired_vel_xy = np.where(reached_all[:, np.newaxis], 0.0, desired_vel_xy)
-        state.info["desired_vel_xy"] = desired_vel_xy
 
-        # Combine into velocity commands
         velocity_commands = np.concatenate([desired_vel_xy, desired_yaw_rate[:, np.newaxis]], axis=-1)
+        return position_error, heading_diff, distance_to_target, reached_all, desired_vel_xy, velocity_commands
+
+    def compute_observation(self, state: ArrayEnvState) -> ArrayEnvState:
+        """Build the full observation from cached sim reads and info."""
+        inputs = self.sim_data
+        gyro = inputs["base_gyro"]
+        projected_gravity = self._compute_projected_gravity(inputs["root_quat"])
+
+        # Navigation quantities recomputed from the same cached reads, so
+        # freshly reset rows observe their post-reset command state.
+        (position_error, heading_diff, distance_to_target, reached_all, _, velocity_commands) = self._navigation_state(
+            state.info
+        )
 
         # Normalize observations
-        noisy_linvel = base_lin_vel * self._cfg.normalization.lin_vel
+        noisy_linvel = inputs["base_linvel"][:, :3] * self._cfg.normalization.lin_vel
         noisy_gyro = gyro * self._cfg.normalization.ang_vel
-        noisy_joint_angle = joint_pos_rel * self._cfg.normalization.dof_pos
-        noisy_joint_vel = joint_vel * self._cfg.normalization.dof_vel
+        noisy_joint_angle = (inputs["robot_joint_pos"] - self.default_angles) * self._cfg.normalization.dof_pos
+        noisy_joint_vel = inputs["robot_joint_vel"] * self._cfg.normalization.dof_vel
         command_normalized = velocity_commands * self.commands_scale
         last_actions = state.info["current_actions"]
 
@@ -256,32 +278,40 @@ class AnymalCEnv(NpEnv):
             ],
             axis=-1,
         )
-        assert obs.shape == (data.shape[0], 54)
+        assert obs.shape == (self._num_envs, 54)
+        return state.replace(obs=obs)
+
+    def compute_transition(self, state: ArrayEnvState):
+        self.sim_data.execute()
+
+        # Get root state and joint states from the refreshed cache
+        root_pos = self.sim_data["root_pos"]
+        base_lin_vel = self.sim_data["base_linvel"][:, :3]
+
+        # Navigation quantities derived directly from the cached reads
+        (_, _, _, _, desired_vel_xy, velocity_commands) = self._navigation_state(state.info)
+        state.info["desired_vel_xy"] = desired_vel_xy
 
         # Update target position marker
-        self._update_target_marker(data, pose_commands)
+        num_envs = self._num_envs
+        self._update_target_marker(np.arange(num_envs, dtype=np.int64), state.info["pose_commands"])
         # Update arrow visualization (no physical effect)
         base_lin_vel_xy = base_lin_vel[:, :2]
-        self._update_heading_arrows(data, root_pos, desired_vel_xy, base_lin_vel_xy)
+        self._update_heading_arrows(np.arange(num_envs, dtype=np.int64), root_pos, desired_vel_xy, base_lin_vel_xy)
 
         # Calculate reward
-        reward = self._compute_reward(data, state.info, velocity_commands)
+        state.reward = self._compute_reward(state.info, velocity_commands)
 
         # Calculate termination conditions
-        terminated_state = self._compute_terminated(state)
-        terminated = terminated_state.terminated
-
-        state.obs = obs
-        state.reward = reward
-        state.terminated = terminated
+        state = self._compute_terminated(state)
 
         return state
 
     def _update_heading_arrows(
-        self, data: mtx.SceneData, robot_pos: np.ndarray, desired_vel_xy: np.ndarray, base_lin_vel_xy: np.ndarray
+        self, env_ids: np.ndarray, robot_pos: np.ndarray, desired_vel_xy: np.ndarray, base_lin_vel_xy: np.ndarray
     ):
         """
-        Update arrow positions (using DOF to control freejoint, no physical effect)
+        Update arrow positions (mocap bodies, no physical effect)
         robot_pos: [num_envs, 3] - Robot position
         desired_vel_xy: [num_envs, 2] - Desired linear velocity (ground coordinates)
         base_lin_vel_xy: [num_envs, 2] - Actual linear velocity (ground coordinates)
@@ -296,41 +326,43 @@ class AnymalCEnv(NpEnv):
         robot_arrow_pos = robot_pos.copy()
         robot_arrow_pos[:, 2] = arrow_height
         robot_arrow_quat = quaternion.from_euler(0, 0, cur_yaw)
-        mocap = self._model.get_body("robot_heading_arrow").mocap
-        mocap.set_pose(data, np.concatenate([robot_arrow_pos, robot_arrow_quat], axis=1))
+        self._heading_writes.buffer("robot")[env_ids, 0] = np.concatenate(
+            [robot_arrow_pos, robot_arrow_quat], axis=1
+        ).astype(np.float32)
 
         des_yaw = np.where(
             np.linalg.norm(desired_vel_xy, axis=1) > 1e-6, np.arctan2(desired_vel_xy[:, 1], desired_vel_xy[:, 0]), 0.0
         )
         desired_arrow_quat = quaternion.from_euler(0, 0, des_yaw)
-        mocap = self._model.get_body("desired_heading_arrow").mocap
-        mocap.set_pose(data, np.concatenate([robot_arrow_pos, desired_arrow_quat], axis=1))
+        self._heading_writes.buffer("desired")[env_ids, 0] = np.concatenate(
+            [robot_arrow_pos, desired_arrow_quat], axis=1
+        ).astype(np.float32)
+        # Both heading markers go to the backend in one crossing.
+        self._heading_writes.execute(env_ids)
 
-    def _compute_reward(self, data: mtx.SceneData, info: dict, velocity_commands: np.ndarray) -> np.ndarray:
+    def _compute_reward(self, info: dict, velocity_commands: np.ndarray) -> np.ndarray:
         """
         Velocity tracking reward mechanism
         velocity_commands: [num_envs, 3] - (vx, vy, vyaw)
         """
+        num_envs = self._num_envs
         # Calculate termination condition penalties
-        termination_penalty = np.zeros(self._num_envs, dtype=np.float32)
+        termination_penalty = np.zeros(num_envs, dtype=np.float32)
 
         # Check if DOF velocity exceeds limit
-        dof_vel = self.get_dof_vel(data)
+        dof_vel = self.get_dof_vel()
         vel_max = np.abs(dof_vel).max(axis=1)
         vel_overflow = vel_max > self._cfg.max_dof_vel
         vel_extreme = (np.isnan(dof_vel).any(axis=1)) | (np.isinf(dof_vel).any(axis=1)) | (vel_max > 1e6)
         termination_penalty = np.where(vel_overflow | vel_extreme, -20.0, termination_penalty)
 
         # Robot base contacts ground penalty
-        cquerys = self._model.get_contact_query(data)
-        termination_check = cquerys.is_colliding(self.termination_contact)
-        termination_check = termination_check.reshape((self._num_envs, self.num_termination_check))
+        termination_check = self.sim_data["termination_colliding"]
         base_contact = termination_check.any(axis=1)
         termination_penalty = np.where(base_contact, -20.0, termination_penalty)
 
         # Side flip penalty
-        pose = self._body.get_pose(data)
-        root_quat = pose[:, 3:7]
+        root_quat = self.sim_data["root_quat"]
         proj_g = self._compute_projected_gravity(root_quat)
         gxy = np.linalg.norm(proj_g[:, :2], axis=1)
         gz = proj_g[:, 2]
@@ -339,35 +371,21 @@ class AnymalCEnv(NpEnv):
         termination_penalty = np.where(side_flip_mask, -20.0, termination_penalty)
 
         # 1. Linear velocity tracking reward
-        base_lin_vel = self._model.get_sensor_value(self._cfg.sensor.base_linvel, data)
+        base_lin_vel = self.sim_data["base_linvel"]
         lin_vel_error = np.sum(np.square(velocity_commands[:, :2] - base_lin_vel[:, :2]), axis=1)
         tracking_lin_vel = np.exp(-lin_vel_error / 0.25)  # tracking_sigma = 0.25
 
         # 2. Angular velocity tracking reward / heading error penalty (mixed strategy)
-        gyro = self._model.get_sensor_value(self._cfg.sensor.base_gyro, data)
+        gyro = self.sim_data["base_gyro"]
         ang_vel_error = np.square(velocity_commands[:, 2] - gyro[:, 2])
         tracking_ang_vel = np.exp(-ang_vel_error / 0.25)
 
-        # Get robot position and heading for arrival determination
-        robot_position = pose[:, :2]
-        robot_heading = quaternion.get_yaw(root_quat)
-        target_position = info["pose_commands"][:, :2]
-        target_heading = info["pose_commands"][:, 2]
-        position_error = target_position - robot_position
-        distance_to_target = np.linalg.norm(position_error, axis=1)
-        heading_diff = target_heading - robot_heading
-        heading_diff = np.where(heading_diff > np.pi, heading_diff - 2 * np.pi, heading_diff)
-        heading_diff = np.where(heading_diff < -np.pi, heading_diff + 2 * np.pi, heading_diff)
-
-        position_threshold = 0.3
-        reached_position = distance_to_target < position_threshold
-
-        heading_threshold = np.deg2rad(15)
-        reached_heading = np.abs(heading_diff) < heading_threshold
-        reached_all = np.logical_and(reached_position, reached_heading)
+        # Get robot position and heading for arrival determination, derived
+        # directly from the cached reads and pose commands
+        (_, _, distance_to_target, reached_all, _, _) = self._navigation_state(info)
 
         # One-time reward for first time reaching position
-        info["ever_reached"] = info.get("ever_reached", np.zeros(self._num_envs, dtype=bool))
+        info["ever_reached"] = info.get("ever_reached", np.zeros(num_envs, dtype=bool))
         first_time_reach = np.logical_and(reached_all, ~info["ever_reached"])
         info["ever_reached"] = np.logical_or(info["ever_reached"], reached_all)
         arrival_bonus = np.where(first_time_reach, 10.0, 0.0)
@@ -403,10 +421,10 @@ class AnymalCEnv(NpEnv):
         ang_vel_xy_penalty = np.sum(np.square(gyro[:, :2]), axis=1)
 
         # 6. Torque penalty
-        torque_penalty = np.sum(np.square(data.actuator_ctrls), axis=1)
+        torque_penalty = np.sum(np.square(self.sim_data["actuator_ctrls"]), axis=1)
 
         # 7. Joint velocity penalty
-        joint_vel = self.get_dof_vel(data)
+        joint_vel = self.get_dof_vel()
         dof_vel_penalty = np.sum(np.square(joint_vel), axis=1)
 
         # 8. Action change penalty
@@ -446,24 +464,25 @@ class AnymalCEnv(NpEnv):
 
         return reward
 
-    def _update_target_marker(self, data: mtx.SceneData, pose_commands: np.ndarray):
+    def _update_target_marker(self, env_ids: np.ndarray, pose_commands: np.ndarray):
         """
         Update position and orientation of target marker
         """
-        num_envs = data.shape[0]
+        num_envs = pose_commands.shape[0]
         arrow_pos = pose_commands.copy()
         arrow_pos[:, 2] = 0.05
         arrow_pos = np.column_stack([pose_commands[:, 0], pose_commands[:, 1], np.full((num_envs, 1), 0.5)])
         arrow_quat = quaternion.from_euler(0, 0, pose_commands[:, 2])
-        mocap = self._model.get_body("target_marker").mocap
-        mocap.set_pose(data, np.concatenate([arrow_pos, arrow_quat], axis=1))
+        self._target_writes.buffer("target")[env_ids, 0] = np.concatenate([arrow_pos, arrow_quat], axis=1).astype(
+            np.float32
+        )
+        self._target_writes.execute(env_ids)
 
-    def _compute_terminated(self, state: NpEnvState) -> NpEnvState:
-        data = state.data
+    def _compute_terminated(self, state: ArrayEnvState) -> ArrayEnvState:
         terminated = np.zeros(self._num_envs, dtype=bool)
 
         # Check if DOF velocity exceeds limit (prevent inf/numerical divergence)
-        dof_vel = self.get_dof_vel(data)
+        dof_vel = self.get_dof_vel()
         vel_max = np.abs(dof_vel).max(axis=1)
         vel_overflow = vel_max > self._cfg.max_dof_vel
         # Extreme velocity/NaN/Inf protection
@@ -472,15 +491,12 @@ class AnymalCEnv(NpEnv):
         terminated = np.logical_or(terminated, vel_extreme)
 
         # Robot base contacts ground termination
-        cquerys = self._model.get_contact_query(data)
-        termination_check = cquerys.is_colliding(self.termination_contact)
-        termination_check = termination_check.reshape((self._num_envs, self.num_termination_check))
+        termination_check = self.sim_data["termination_colliding"]
         base_contact = termination_check.any(axis=1)
         terminated = np.logical_or(terminated, base_contact)
 
         # Side flip termination: tilt angle exceeds 75°
-        pose = self._body.get_pose(data)
-        root_quat = pose[:, 3:7]
+        root_quat = self.sim_data["root_quat"]
         proj_g = self._compute_projected_gravity(root_quat)
         gxy = np.linalg.norm(proj_g[:, :2], axis=1)
         gz = proj_g[:, 2]
@@ -490,9 +506,9 @@ class AnymalCEnv(NpEnv):
 
         return state.replace(terminated=terminated)
 
-    def reset(self, data: mtx.SceneData) -> tuple[np.ndarray, dict]:
+    def reset(self, env_ids: np.ndarray) -> dict:
         cfg: AnymalCEnvCfg = self._cfg
-        num_envs = data.shape[0]
+        num_envs = len(env_ids)
 
         # First generate robot initial position (in world coordinates)
         pos_range = cfg.init_state.pos_randomization_range
@@ -522,44 +538,34 @@ class AnymalCEnv(NpEnv):
 
         pose_commands = np.concatenate([target_positions, target_headings], axis=1)
 
-        # Set initial state - avoid adding noise to quaternion
-        init_dof_pos = np.tile(self._init_dof_pos, (*data.shape, 1))
-        init_dof_vel = np.tile(self._init_dof_vel, (*data.shape, 1))
+        # Set initial state without perturbing the base quaternion.
+        base_pose = np.tile(self._init_base_pose, (num_envs, 1))
+        base_pose[:, 0] = robot_init_x
+        base_pose[:, 1] = robot_init_y
+        # Keep the configured/default Z height and reset all velocities to zero.
+        _reset_pose = base_pose
+        self._reset_position[env_ids] = _reset_pose[:, :3]
+        self._reset_rotation[env_ids] = _reset_pose[:, 3:7]
+        self._reset_linear_velocity[env_ids] = 0.0
+        self._reset_angular_velocity[env_ids] = 0.0
+        self._reset_joint_position[env_ids] = self._init_joint_position
+        self._reset_joint_velocity[env_ids] = 0.0
+        self._reset_program.execute(env_ids)
 
-        # Create noise - do not add noise to quaternion
-        noise_pos = np.zeros((*data.shape, self._num_dof_pos), dtype=np.float32)
+        # Update target position marker (after the row reset so its default
+        # mocap pose restoration cannot wipe it)
+        self._update_target_marker(np.asarray(env_ids, dtype=np.int64), pose_commands)
+        self.sim_data.execute(np.asarray(env_ids, dtype=np.int64))
 
-        # Base position (DOF 0-2): use the generated random initial position
-        noise_pos[:, 0] = robot_init_x - cfg.init_state.pos[0]  # Offset from default position
-        noise_pos[:, 1] = robot_init_y - cfg.init_state.pos[1]
-        # No noise on Z axis, maintain fixed height to avoid falling feeling
+        # Get root state for the reset rows only: the cached views are
+        # full-batch, while pose_commands and the arrow writes below are
+        # sized to this reset batch.
+        rows = np.asarray(env_ids, dtype=np.int64)
+        root_pos = self.sim_data["root_pos"][rows]
+        root_quat = self.sim_data["root_quat"][rows]
+        root_vel = self.sim_data["base_linvel"][rows]
 
-        # All velocities set to 0, ensure completely stationary
-        noise_vel = np.zeros((*data.shape, self._num_dof_vel), dtype=np.float32)
-
-        dof_pos = init_dof_pos + noise_pos
-        dof_vel = init_dof_vel + noise_vel
-
-        data.reset(self._model)
-        data.set_dof_vel(dof_vel)
-        data.set_dof_pos(dof_pos, self._model)
-        self._model.forward_kinematic(data)
-
-        # Update target position marker
-        self._update_target_marker(data, pose_commands)
-
-        # Get root state
-        root_pos, root_quat, root_vel = self._extract_root_state(data)
-
-        # Joint states (leg joints)
-        joint_pos = self.get_dof_pos(data)
-        joint_vel = self.get_dof_vel(data)
-        joint_pos_rel = joint_pos - self.default_angles
-
-        # Get sensor data
         base_lin_vel = root_vel[:, :3]
-        gyro = self._model.get_sensor_value(self._cfg.sensor.base_gyro, data)
-        projected_gravity = self._compute_projected_gravity(root_quat)
 
         # Calculate velocity commands (consistent with update_state)
         robot_position = root_pos[:, :2]
@@ -581,7 +587,7 @@ class AnymalCEnv(NpEnv):
         base_lin_vel_xy = base_lin_vel[:, :2]
 
         # Update arrow visualization (no physical effect)
-        self._update_heading_arrows(data, root_pos, desired_vel_xy, base_lin_vel_xy)
+        self._update_heading_arrows(np.asarray(env_ids, dtype=np.int64), root_pos, desired_vel_xy, base_lin_vel_xy)
 
         heading_diff = target_heading - robot_heading
         heading_diff = np.where(heading_diff > np.pi, heading_diff - 2 * np.pi, heading_diff)
@@ -600,45 +606,6 @@ class AnymalCEnv(NpEnv):
         if desired_yaw_rate.ndim > 1:
             desired_yaw_rate = desired_yaw_rate.flatten()
 
-        velocity_commands = np.concatenate([desired_vel_xy, desired_yaw_rate[:, np.newaxis]], axis=-1)
-
-        # Normalize observations (consistent with update_state)
-        noisy_linvel = base_lin_vel * self._cfg.normalization.lin_vel
-        noisy_gyro = gyro * self._cfg.normalization.ang_vel
-        noisy_joint_angle = joint_pos_rel * self._cfg.normalization.dof_pos
-        noisy_joint_vel = joint_vel * self._cfg.normalization.dof_vel
-        command_normalized = velocity_commands * self.commands_scale
-        last_actions = np.zeros((num_envs, self._num_action), dtype=np.float32)
-
-        # Calculate task-related observations (consistent with update_state)
-        position_error_normalized = position_error / 5.0
-        heading_error_normalized = heading_diff / np.pi
-        distance_normalized = np.clip(distance_to_target / 5.0, 0, 1)
-        reached_flag = reached_all.astype(np.float32)
-
-        # Calculate if zero_ang standard is met
-        stop_ready = np.logical_and(reached_all, np.abs(gyro[:, 2]) < 5e-2)
-        stop_ready_flag = stop_ready.astype(np.float32)
-
-        obs = np.concatenate(
-            [
-                noisy_linvel,  # 3
-                noisy_gyro,  # 3
-                projected_gravity,  # 3
-                noisy_joint_angle,  # 12
-                noisy_joint_vel,  # 12
-                last_actions,  # 12
-                command_normalized,  # 3
-                position_error_normalized,  # 2
-                heading_error_normalized[:, np.newaxis],  # 1
-                distance_normalized[:, np.newaxis],  # 1
-                reached_flag[:, np.newaxis],  # 1
-                stop_ready_flag[:, np.newaxis],  # 1
-            ],
-            axis=-1,
-        )
-        assert obs.shape == (num_envs, 54)
-
         info = {
             "pose_commands": pose_commands,
             "last_actions": np.zeros((num_envs, self._num_action), dtype=np.float32),
@@ -647,7 +614,7 @@ class AnymalCEnv(NpEnv):
             "min_distance": distance_to_target.copy(),  # Initialize minimum distance
         }
 
-        return obs, info
+        return info
 
     def _compute_projected_gravity(self, quat: np.ndarray) -> np.ndarray:
         gravity = np.array([0.0, 0.0, -1.0], dtype=np.float32)

@@ -1,0 +1,81 @@
+version: 1
+
+# Documentation benchmarks are intentionally opt-in. Add one entry after the
+# environment's training recipe and TensorBoard metric have been validated.
+benchmarks:
+  cartpole:
+    task: cartpole/skrl.ppo
+    template: default
+    metric: "Reward / Total reward (mean)"
+    default_seed: 0
+    benchmark_seeds: [0, 1, 2]
+  go1-walk-rough:
+    task: go1-walk-rough/rslrl.ppo
+    template: default
+    metric: Train/mean_reward
+    default_seed: 1
+    benchmark_seeds: [1]
+  go2-walk-rough:
+    task: go2-walk-rough/rslrl.ppo
+    template: default
+    metric: Train/mean_reward
+    default_seed: 1
+    benchmark_seeds: [1]
+  anymalc-walk-rough:
+    task: anymalc-walk-rough/rslrl.ppo
+    template: default
+    metric: Train/mean_reward
+    default_seed: 1
+    benchmark_seeds: [1]
+  dex-evt-walk-rough:
+    task: dex-evt-walk-rough/motrix.fastsac
+    template: curriculum
+    metric: rollout/mean_return
+    curriculum_metric: metrics/penalty_scale
+    curriculum_metric_label:
+      en: Penalty scale
+      zh_CN: 惩罚缩放
+    default_seed: 1
+    benchmark_seeds: [1]
+  g1-walk-rough:
+    task: g1-walk-rough/motrix.fastsac
+    template: curriculum
+    metric: rollout/mean_return
+    curriculum_metric: metrics/penalty_scale
+    curriculum_metric_label:
+      en: Penalty scale
+      zh_CN: 惩罚缩放
+    default_seed: 1
+    benchmark_seeds: [1]
+  g1-wbt-dance:
+    task: g1-wbt-dance/motrix.fastsac
+    template: wbt
+    metric: rollout/mean_return
+    survival_metric: rollout/mean_ep_len
+    survival_metric_label:
+      en: Episode survival (%)
+      zh_CN: Episode 存活率（%）
+    episode_length_max: 500
+    default_seed: 1
+    benchmark_seeds: [1]
+  dex-evt-wbt-dance:
+    task: dex-evt-wbt-dance/motrix.fastsac
+    template: wbt
+    metric: rollout/mean_return
+    survival_metric: rollout/mean_ep_len
+    survival_metric_label:
+      en: Episode survival (%)
+      zh_CN: Episode 存活率（%）
+    episode_length_max: 500
+    default_seed: 1
+    benchmark_seeds: [1]
+  k1-walk-rough:
+    task: k1-walk-rough/motrix.fastsac
+    template: curriculum
+    metric: rollout/mean_return
+    curriculum_metric: metrics/penalty_scale
+    curriculum_metric_label:
+      en: Penalty scale
+      zh_CN: 惩罚缩放
+    default_seed: 1
+    benchmark_seeds: [1]

@@ -1,0 +1,37 @@
+# @package _global_
+# Task rm65-open-cabinet: skrl.ppo shared training recipe.
+defaults:
+  - /algo_base@algo: skrl.ppo
+  - _self_
+task:
+  env: rm65-open-cabinet
+  rllib: skrl
+  algo: ppo
+  train_backend: null
+num_envs: 2048
+play_num_envs: 16
+seed: 64
+algo:
+  models:
+    separate: true
+    policy:
+      hiddens:
+        - 512
+        - 256
+        - 128
+    value:
+      hiddens:
+        - 512
+        - 256
+        - 128
+  agent:
+    learning_epochs: 5
+    learning_rate: 8.0e-05
+    learning_rate_scheduler_kwargs:
+      kl_threshold: 0.005
+    grad_norm_clip: 0.4
+    ratio_clip: 0.1
+    entropy_loss_scale: 0.0002
+    rewards_shaper_scale: 0.05
+  trainer:
+    timesteps: 21000

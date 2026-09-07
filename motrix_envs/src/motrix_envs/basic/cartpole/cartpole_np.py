@@ -1,43 +1,48 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
 
 import gymnasium as gym
-import motrixsim as mtx
 import numpy as np
 
-from motrix_envs import registry
-from motrix_envs.np.env import NpEnv, NpEnvState
+from motrix_env_core import registry
+from motrix_env_core.array.env import ArrayEnvState
+from motrix_env_core.direct.env import DirectEnv
+from motrix_env_core.sim import (
+    DofPositionQuery,
+    DofVelocityQuery,
+    JointPositionWrite,
+)
+from motrix_env_core.sim.write import CtrlTargetsWrite, JointVelocityWrite
 
 from .cfg import CartPoleEnvCfg
 
+_SIM_DATA_QUERIES = {
+    "dof_pos": DofPositionQuery(),
+    "dof_vel": DofVelocityQuery(),
+}
+_SIM_MODEL_QUERIES = {}
 
-@registry.env("cartpole", "np")
-class CartPoleEnv(NpEnv):
+
+@registry.env("cartpole")
+class CartPoleEnv(DirectEnv):
     _cfg: CartPoleEnvCfg
 
-    def __init__(self, cfg: CartPoleEnvCfg, num_envs: int = 1):
-        super().__init__(cfg, num_envs=num_envs)
+    def __init__(self, cfg: CartPoleEnvCfg, num_envs=1, backend: str | None = None):
+        super().__init__(cfg, num_envs, backend=backend)
+        self.model = self.sim.compile_model(_SIM_MODEL_QUERIES)
+        self.sim_data = self.sim.compile_reads(_SIM_DATA_QUERIES)
+        self._ctrl_writes = self.sim.write_compiler.compile({"ctrl": CtrlTargetsWrite()})
+        self._reset_program = self.sim.write_compiler.compile(
+            {
+                "cartpole_position": JointPositionWrite(("slider", "hinge")),
+                "cartpole_velocity": JointVelocityWrite(("slider", "hinge")),
+            },
+            reset=True,
+        )
+        self._reset_position = self._reset_program.buffer("cartpole_position")
+        self._reset_velocity = self._reset_program.buffer("cartpole_velocity")
         self._action_space = gym.spaces.Box(-3.0, 3.0, (1,), dtype=np.float32)
         self._observation_space = gym.spaces.Box(-np.inf, np.inf, (4,), dtype=np.float32)
-        self._num_dof_pos = self._model.num_dof_pos
-        self._num_dof_vel = self._model.num_dof_vel
-        self._init_dof_pos = self._model.compute_init_dof_pos()
-        self._init_dof_vel = np.zeros(
-            (self._model.num_dof_vel,),
-            dtype=np.float32,
-        )
 
     @property
     def observation_space(self):
@@ -47,17 +52,16 @@ class CartPoleEnv(NpEnv):
     def action_space(self):
         return self._action_space
 
-    def apply_action(self, actions: np.ndarray, state: NpEnvState):
-        state.data.actuator_ctrls = actions
+    def apply_action(self, actions: np.ndarray, state: ArrayEnvState):
+        ctrl = self._ctrl_writes.buffer("ctrl")
+        ctrl[:] = actions.astype(np.float32, copy=False)
+        self._ctrl_writes.execute()
         return state
 
-    def update_state(self, state: NpEnvState):
-        # compute observation
-        data = state.data
-        dof_pos = data.dof_pos
-        dof_vel = data.dof_vel
-        obs = np.concatenate([dof_pos, dof_vel], axis=-1)
-        assert obs.shape == (self._num_envs, 4)
+    def compute_transition(self, state: ArrayEnvState):
+        self.sim_data.execute()
+        inputs = self.sim_data
+        dof_pos = inputs["dof_pos"]
 
         # compute reward
         reward = np.ones((self._num_envs,), dtype=np.float32)
@@ -69,29 +73,34 @@ class CartPoleEnv(NpEnv):
         terminated = np.logical_or(cart_pos < -0.8, terminated)
         terminated = np.logical_or(cart_pos > 0.8, terminated)
 
-        state.obs = obs
         state.reward = reward
         state.terminated = terminated
         return state
 
-    def reset(self, data: mtx.SceneData):
+    def compute_observation(self, state: ArrayEnvState):
+        obs = np.concatenate([self.sim_data["dof_pos"], self.sim_data["dof_vel"]], axis=-1)
+        assert obs.shape == (self._num_envs, 4)
+        return state.replace(obs=obs)
+
+    def reset(self, env_ids: np.ndarray):
         cfg: CartPoleEnvCfg = self._cfg
+        rows = len(env_ids)
         noise_pos = np.random.uniform(
             -cfg.reset_noise_scale,
             cfg.reset_noise_scale,
-            (*data.shape, self._num_dof_pos),
+            (rows, 2),
         )
         noise_vel = np.random.uniform(
             -cfg.reset_noise_scale,
             cfg.reset_noise_scale,
-            (*data.shape, self._num_dof_vel),
+            (rows, 2),
         )
 
-        dof_pos = np.tile(self._init_dof_pos, (*data.shape, 1)) + noise_pos
-        dof_vel = np.tile(self._init_dof_vel, (*data.shape, 1)) + noise_vel
+        dof_pos = noise_pos.astype(np.float32)
+        dof_vel = noise_vel.astype(np.float32)
 
-        data.reset(self._model)
-        data.set_dof_vel(dof_vel)
-        data.set_dof_pos(dof_pos, self._model)
-        obs = np.concatenate([dof_pos, dof_vel], axis=-1)
-        return obs, {}
+        self._reset_position[env_ids] = dof_pos
+        self._reset_velocity[env_ids] = dof_vel
+        self._reset_program.execute(env_ids)
+        self.sim_data.execute(env_ids)
+        return {}

@@ -1,0 +1,20 @@
+# @package _global_
+# Task dm-manipulator-bring-ball: skrl.ppo shared training recipe.
+defaults:
+  - /algo_base@algo: skrl.ppo
+  - _self_
+task:
+  env: dm-manipulator-bring-ball
+  rllib: skrl
+  algo: ppo
+  train_backend: null
+num_envs: 2048
+play_num_envs: 16
+seed: 42
+algo:
+  trainer:
+    timesteps: 20000
+  agent:
+    rollouts: 24
+    mini_batches: 4
+    learning_epochs: 4

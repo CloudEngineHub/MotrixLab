@@ -17,12 +17,9 @@ services:
               capabilities: [gpu]
     command:
       - scripts/train.py
-      - --train-backend
-      - ${MOTRIX_TRAIN_BACKEND:-jax}
-      - --num-envs
-      - ${MOTRIX_NUM_ENVS:-2048}
-      - --env
-      - ${MOTRIX_ENV:-cartpole}
+      - train_backend=${MOTRIX_TRAIN_BACKEND:-jax}
+      - num_envs=${MOTRIX_NUM_ENVS:-2048}
+      - env=${MOTRIX_ENV:-cartpole}
     restart: no
 
   motrixlab-tensorboard:

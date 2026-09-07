@@ -1,100 +1,118 @@
 # 训练执行和结果分析
 
-本节介绍如何执行强化学习训练，以及如何分析和使用训练结果。
+本节介绍如何执行强化学习训练，以及如何分析和使用训练结果。训练产物（`runs/` 目录、`metadata.json`、checkpoint）的结构与生成逻辑见[训练产物：runs 目录与 checkpoint 结构](runs_and_checkpoints.md)。
 
 ## 启动训练
 
-### 基本训练命令
+### 选择 Task
+
+训练入口使用 Hydra 的 `task=<环境>/<框架>.<算法>[.<后端>]` 选项。一个 Task 会把环境、RL provider、运行参数和算法超参数组合成一份可复现的训练配方：
 
 ```bash
-# 使用默认参数训练（SKRL 框架）
-uv run scripts/train.py --env cartpole
+# 训练默认的 Cartpole SKRL PPO Task
+uv run scripts/train.py task=cartpole/skrl.ppo
 
-# 指定 RL 框架
-uv run scripts/train.py --env cartpole --rllib skrl
-uv run scripts/train.py --env cartpole --rllib rslrl
-
-# 指定仿真后端
-uv run scripts/train.py --env cartpole --sim-backend np
-
-# 指定训练后端（仅 SKRL）
-uv run scripts/train.py --env cartpole --rllib skrl --train-backend jax
-uv run scripts/train.py --env cartpole --rllib skrl --train-backend torch
+# 选择其他框架或算法
+uv run scripts/train.py task=cartpole/rslrl.ppo
+uv run scripts/train.py task=g1-walk-flat/motrix.fastsac
+uv run scripts/train.py task=g1-walk-flat/motrix.fastsac algo.asynchronous=false
 ```
 
-### 高级训练配置
+当前内置的 RL method 与训练后端：
+
+| Task 后缀        | 训练后端        | 说明                                            |
+| ---------------- | --------------- | ----------------------------------------------- |
+| `skrl.ppo`       | `jax` / `torch` | SKRL PPO                                        |
+| `rslrl.ppo`      | `torch`         | RSLRL PPO                                       |
+| `motrix.fastsac` | `torch`         | FastSAC；`algo.asynchronous` 选择同步或异步拓扑 |
+
+运行 `uv run scripts/train.py --help` 可以查看当前代码中全部可选 Task。Task 文件结构和覆盖规则见 [Task 配置与命令行参数覆盖](training_environment_config.md)。
+
+### 选择训练后端与仿真后端
 
 ```bash
-# 使用 SKRL 自定义训练参数
-uv run scripts/train.py --env cartpole \
-  --rllib skrl \
-  --num-envs 1024 \
-  --train-backend jax \
-  --sim-backend np
+# 覆盖训练后端（task.train_backend 为 null 时自动选择）
+uv run scripts/train.py task=cartpole/skrl.ppo task.train_backend=jax
+uv run scripts/train.py task=cartpole/skrl.ppo task.train_backend=torch
 
-# 使用 RSLRL 自定义训练参数
-uv run scripts/train.py --env cartpole \
-  --rllib rslrl \
-  --num-envs 1024 \
-  --sim-backend np
+# 指定 manager 环境注入的仿真器
+uv run scripts/train.py task=g1-wbt-dance sim=motrixsim
+```
 
-# 注意：学习率等参数需要通过配置文件或代码覆盖设置
+### 训练规模与随机种子
+
+```bash
+# 并行环境数量
+uv run scripts/train.py task=cartpole/skrl.ppo num_envs=1024
+
+# 固定随机种子（复现）/ 运行时选择随机种子
+uv run scripts/train.py task=cartpole/skrl.ppo seed=42
+uv run scripts/train.py task=cartpole/skrl.ppo seed=null
+```
+
+```{note}
+Hydra 可以直接覆盖已经声明的算法字段，例如 `algo.agent.learning_rate=5e-4`。字段路径取决于所选 Task，完整默认值位于 `configs/algo_base/`。
+```
+
+### 训练后自动回放与续训
+
+```bash
+# 训练成功结束后，用本次 run 的最佳策略自动回放
+uv run scripts/train.py task=g1-walk-flat/motrix.fastsac play=true
+
+# 从某个 run 目录或 checkpoint 续训
+uv run scripts/train.py task=g1-walk-flat/motrix.fastsac \
+  resume=/path/to/run
 
 # 启用渲染监控训练过程
-uv run scripts/train.py --env cartpole --render
+uv run scripts/train.py task=cartpole/skrl.ppo render=true
 ```
 
-### 不同框架配置
+### 常用 Hydra 覆盖项
 
-系统支持不同的 RL 框架，具有不同的配置系统：
-
--   **SKRL 框架**：支持 JAX 和 PyTorch 训练后端，可通过 Python 数据类为每个后端配置参数
--   **RSLRL 框架**：支持 PyTorch 后端，通过 Python 数据类（RslrlCfg）进行配置
-
-对于 SKRL，系统支持为不同训练后端（JAX/Torch）配置不同的强化学习参数。例如：
-
-### 支持的命令行参数
-
-| 参数              | 说明                          | 默认值     |
-| ----------------- | ----------------------------- | ---------- |
-| `--env`           | 环境名称                      | `cartpole` |
-| `--rllib`         | RL 框架 (skrl/rslrl)          | `skrl`     |
-| `--sim-backend`   | 仿真后端 (np)                 | 自动选择   |
-| `--train-backend` | 训练后端 (jax/torch，仅 SKRL) | 自动选择   |
-| `--num-envs`      | 并行环境数量                  | 2048       |
-| `--render`        | 启用渲染                      | False      |
-
-> **注意**: 其他参数如学习率、网络结构等需要通过单独文件设置。
+| 覆盖项               | 说明                                    | 默认值来源          |
+| -------------------- | --------------------------------------- | ------------------- |
+| `task=...`           | 环境、框架、算法和后端差异配置          | `cartpole/skrl.ppo` |
+| `task.train_backend` | 训练后端（`jax` / `torch`）             | 所选 Task           |
+| `sim`                | manager 环境的仿真器；np 环境保持未设置 | `null` / 自动选择   |
+| `num_envs`           | 并行训练环境数量                        | 所选 Task           |
+| `seed`               | 固定种子；`null` 表示运行时随机选择     | 所选 Task           |
+| `resume`             | 续训的 run 目录或 checkpoint            | `null`              |
+| `play`               | 训练结束后回放最佳策略                  | `false`             |
+| `render`             | 启用交互式渲染                          | `false`             |
+| `algo.*`             | provider 声明的算法配置                 | 算法基础配置 + Task |
+| `algo.asynchronous`  | 选择同步或异步 FastSAC 执行拓扑         | 所选 Task           |
+| `logging.*`          | 日志后端与间隔                          | 训练根配置 + Task   |
+| `checkpoint.*`       | 周期 checkpoint 策略                    | 训练根配置 + Task   |
 
 ## 训练过程监控
 
 ### TensorBoard 监控
 
-启动 TensorBoard 查看训练进度：
-
-```bash
-uv run tensorboard --logdir runs/{env-name}
-```
-
-例如：
+TensorBoard 日志写在 run 目录下，可按环境查看：
 
 ```bash
 uv run tensorboard --logdir runs/cartpole
 ```
 
+除标准的回报、损失曲线外，若环境通过 `info["Reward"]` 暴露了各 reward 分项，训练时也会将其记录到 TensorBoard。
+
 ## 模型评估和测试
 
-### 使用训练好的策略
+回放（play）不需要重复指定 RL method——正确的 `rllib / train_backend / algo` 会从 run 的 `metadata.json` 自动读取。
 
 ```bash
-# 自动寻找最佳策略测试（推荐）
-uv run scripts/play.py --env cartpole
+# 自动发现最新 run 的最佳策略并回放（推荐）
+uv run scripts/play.py env=cartpole
 
-# 手动指定策略文件测试
-uv run scripts/play.py --env cartpole --policy runs/cartpole/nn/best_agent.pickle
+# 指定某个 checkpoint（需能向上找到 metadata.json）
+uv run scripts/play.py env=g1-walk-flat \
+  policy=/path/to/run/checkpoints/latest.pt
 
-# 指定测试环境数量
-uv run scripts/play.py --env cartpole --num-envs 100
+# 指定回放环境数量
+uv run scripts/play.py env=cartpole num_envs=100
 ```
 
-> **说明**：系统会自动在 `runs/cartpole/` 目录下寻找最新、最佳的策略文件进行测试。
+```{note}
+不设置 `policy=...` 时，系统会在 `runs/{env}/` 下扫描所有 `metadata.json`，选择最新的 run，并按其 `checkpoints/manifest.json` 加载最佳策略。只有带 `metadata.json` 与 manifest 的 run 才会参与自动发现；旧 run 需要显式设置 `policy=...`。详见[训练产物：runs 目录与 checkpoint 结构](runs_and_checkpoints.md)。
+```

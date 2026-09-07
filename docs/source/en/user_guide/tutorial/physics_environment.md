@@ -1,27 +1,36 @@
 # Physics Environment Configuration
 
-Physics environment configuration defines simulation parameters and model file settings in reinforcement learning training.
+Physics environment configuration defines simulation parameters and scene settings in reinforcement learning training.
 MotrixLab uses [MotrixSim](https://motrixsim.readthedocs.io/en/latest/user_guide/index.html) as the physics simulation backend.
 
 ## Supported File Formats
 
 -   [**MJCF**](https://mujoco.readthedocs.io/en/stable/XMLreference.html) (MuJoCo XML format) - Provides rich physics features and simulation configuration
 
-## Model File Configuration
+## Scene File Configuration
 
-You need to specify model file paths in environment configuration classes:
+Use `SceneCfg.file` to load a complete model file as the base scene. Assets, visual settings, and scene objects declared
+on the same `SceneCfg` are applied to that base world before the model is built:
 
 ```python
+from motrix_env_core import registry
+from motrix_env_core.base import EnvCfg, SimCfg
+from motrix_env_core.config import configclass
+from motrix_env_core.config.scene import SceneCfg
+
 
 @registry.envcfg("my-task")
-@dataclass
+@configclass
 class MyTaskEnvCfg(EnvCfg):
-    # Model file path (required)
-    model_file: str = "my_model.xml"
+    scene: SceneCfg = SceneCfg(file="my_model.xml")
 
-    # Simulation time parameters
-    sim_dt: float = 0.002      # Simulation time step
-    ctrl_dt: float = 0.02      # Control update frequency
+    # Simulation and control parameters
+    sim: SimCfg = SimCfg(
+        dt=0.002,
+        solver_iterations=3,
+        solver_tolerance=1e-4,
+    )
+    ctrl_dt: float = 0.02
 
     # Episode parameters
     max_episode_seconds: float = 20.0
@@ -31,7 +40,7 @@ class MyTaskEnvCfg(EnvCfg):
 ### Recommended Directory Structure
 
 ```
-motrix_envs/my_task/
+my_environment_package/my_task/
 ├── __init__.py          # Module initialization
 ├── cfg.py               # Environment configuration
 ├── my_model.xml         # Physics model file
@@ -51,10 +60,12 @@ For complex models with many referenced files, it's recommended to use folder ma
 
 ### Time Step Settings
 
--   `ctrl_dt` should be an integer multiple of `sim_dt`
--   `sim_dt` that is too small will affect simulation performance
+-   `ctrl_dt` should be an integer multiple of `sim.dt`
+-   `sim.dt` that is too small will affect simulation performance
 -   `ctrl_dt` that is too large will affect control precision
--   Recommend `sim_dt` between 0.001-0.02 seconds
+-   Recommend `sim.dt` between 0.001-0.02 seconds
+
+`SimCfg` configures the physics engine through MSD `World.simulate_option` before the model is built. When `solver_iterations`, `solver_tolerance`, or `gravity` is `None`, the value already provided by the MJCF or MSD World is preserved; an explicit value overrides the model source.
 
 ### Simulation Stability
 

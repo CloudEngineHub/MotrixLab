@@ -1,111 +1,219 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
 
 import gymnasium as gym
-import motrixsim as mtx
 import numpy as np
 
-from motrix_envs import registry
-from motrix_envs.basic.quadruped.cfg import QuadrupedBaseCfg
-from motrix_envs.math import quaternion
-from motrix_envs.np import reward
-from motrix_envs.np.env import NpEnv, NpEnvState
+from motrix_env_core import registry
+from motrix_env_core.array.env import ArrayEnvState
+from motrix_env_core.direct import reward
+from motrix_env_core.direct.env import DirectEnv
+from motrix_env_core.math import quaternion
+from motrix_env_core.sim import (
+    ActuatorCtrlQuery,
+    BodyAngularVelocityWrite,
+    BodyJointPositionWrite,
+    BodyLinearVelocityWrite,
+    BodyPositionWrite,
+    BodyRotationWrite,
+    DofPositionQuery,
+    DofVelocityQuery,
+    GeomPairCollidingQuery,
+    GeomPositionQuery,
+    GeomQuaternionQuery,
+    GeomSpecsQuery,
+    LinkPositionQuery,
+    LinkQuaternionQuery,
+    SensorValuesQuery,
+    SitePositionQuery,
+)
+from motrix_env_core.sim.write import BodyJointVelocityWrite, CtrlTargetsWrite
+from motrix_envs.basic.quadruped.cfg import _LEG_BODY_GEOM_NAMES, QuadrupedBaseCfg
 
 _RANGEFINDER_SENSORS = [f"rf_{row}{col}" for row in range(4) for col in range(5)]
 
+# quadruped_fetch.xml declares the "target" site as a 0.4-radius cylinder; the
+# legacy env read that site size at runtime. Site metadata is not part of the
+# sim descriptor, so the verified asset value is pinned here.
+_FETCH_TARGET_SITE_RADIUS = 0.4
 
-class QuadrupedEnv(NpEnv):
+_LEG_GEOM_NAMES = tuple(name for leg in _LEG_BODY_GEOM_NAMES for name in leg)
+_WALK_GEOMS = ("floor", "eye_r", "eye_l", "torso", *_LEG_GEOM_NAMES)
+_ESCAPE_GEOMS = ("floor", "terrain", "eye_r", "eye_l", "torso", *_LEG_GEOM_NAMES)
+_FETCH_GEOMS = (
+    "floor",
+    "wall_px",
+    "wall_py",
+    "wall_nx",
+    "wall_ny",
+    "target_marker",
+    "eye_r",
+    "eye_l",
+    "torso",
+    "torso_belly",
+    *_LEG_GEOM_NAMES,
+    "ball",
+)
+
+
+def _collision_pairs(geoms):
+    return tuple((first, second) for index, first in enumerate(geoms) for second in geoms[index + 1 :])
+
+
+def _leg_geom_queries():
+    return {
+        key: query
+        for name in _LEG_GEOM_NAMES
+        for key, query in (
+            (f"{name}__pos", GeomPositionQuery(geom=name)),
+            (f"{name}__quat", GeomQuaternionQuery(geom=name)),
+        )
+    }
+
+
+_BASE_SIM_QUERIES = {
+    "dof_pos": DofPositionQuery(),
+    "dof_vel": DofVelocityQuery(),
+    "actuator_ctrls": ActuatorCtrlQuery(),
+    "torso_pos": LinkPositionQuery(link="torso"),
+    "torso_quat": LinkQuaternionQuery(link="torso"),
+    "velocimeter": SensorValuesQuery(sensors=("velocimeter",)),
+    "imu": SensorValuesQuery(sensors=("imu_accel", "imu_gyro")),
+}
+
+
+_LOCOMOTION_DATA_QUERIES = {
+    **_BASE_SIM_QUERIES,
+    "colliding": GeomPairCollidingQuery(pairs=_collision_pairs(_WALK_GEOMS)),
+}
+_LOCOMOTION_MODEL_QUERIES = {"geoms": GeomSpecsQuery(names=("floor",))}
+
+_ESCAPE_DATA_QUERIES = {
+    **_BASE_SIM_QUERIES,
+    "colliding": GeomPairCollidingQuery(pairs=_collision_pairs(_ESCAPE_GEOMS)),
+    "workspace_pos": SitePositionQuery(site="workspace"),
+}
+_ESCAPE_MODEL_QUERIES = {"geoms": GeomSpecsQuery(names=("floor",))}
+
+_FETCH_DATA_QUERIES = {
+    **_BASE_SIM_QUERIES,
+    "colliding": GeomPairCollidingQuery(pairs=_collision_pairs(_FETCH_GEOMS)),
+    "target_pos": SitePositionQuery(site="target"),
+    "ball_pos": LinkPositionQuery(link="ball"),
+    "ball_geom_pos": GeomPositionQuery(geom="ball"),
+    **_leg_geom_queries(),
+}
+_FETCH_MODEL_QUERIES = {"geoms": GeomSpecsQuery(names=("floor", "ball", *_LEG_GEOM_NAMES))}
+
+
+def _quat_to_rotation_mats(quats: np.ndarray) -> np.ndarray:
+    """Convert (x, y, z, w) quaternions, shape (..., 4), to rotation mats (..., 3, 3)."""
+    x, y, z, w = quats[..., 0], quats[..., 1], quats[..., 2], quats[..., 3]
+    mats = np.empty(quats.shape[:-1] + (3, 3), dtype=quats.dtype)
+    mats[..., 0, 0] = 1 - 2 * (y * y + z * z)
+    mats[..., 0, 1] = 2 * (x * y - z * w)
+    mats[..., 0, 2] = 2 * (x * z + y * w)
+    mats[..., 1, 0] = 2 * (x * y + z * w)
+    mats[..., 1, 1] = 1 - 2 * (x * x + z * z)
+    mats[..., 1, 2] = 2 * (y * z - x * w)
+    mats[..., 2, 0] = 2 * (x * z - y * w)
+    mats[..., 2, 1] = 2 * (y * z + x * w)
+    mats[..., 2, 2] = 1 - 2 * (x * x + y * y)
+    return mats
+
+
+class QuadrupedEnv(DirectEnv):
     _cfg: QuadrupedBaseCfg
     _observation_space: gym.spaces.Box
     _action_space: gym.spaces.Box
 
-    def __init__(self, cfg: QuadrupedBaseCfg, num_envs: int = 1):
-        super().__init__(cfg, num_envs)
+    def __init__(self, cfg: QuadrupedBaseCfg, num_envs=1, backend: str | None = None):
+        super().__init__(cfg, num_envs, backend=backend)
+        if cfg.include_ball:
+            data_queries, model_queries = _FETCH_DATA_QUERIES, _FETCH_MODEL_QUERIES
+        elif cfg.include_origin:
+            data_queries, model_queries = _ESCAPE_DATA_QUERIES, _ESCAPE_MODEL_QUERIES
+        else:
+            data_queries, model_queries = _LOCOMOTION_DATA_QUERIES, _LOCOMOTION_MODEL_QUERIES
+        self.model = self.sim.compile_model(model_queries)
+        self.sim_data = self.sim.compile_reads(data_queries)
+        self._ctrl_writes = self.sim.write_compiler.compile({"ctrl": CtrlTargetsWrite()})
+        resets = {
+            "torso_position": BodyPositionWrite(("torso",)),
+            "torso_rotation": BodyRotationWrite(("torso",)),
+            "torso_linear_velocity": BodyLinearVelocityWrite(("torso",)),
+            "torso_angular_velocity": BodyAngularVelocityWrite(("torso",)),
+            "joints_position": BodyJointPositionWrite("torso"),
+            "joints_velocity": BodyJointVelocityWrite("torso"),
+        }
+        if cfg.include_ball:
+            resets.update(
+                {
+                    "ball_position": BodyPositionWrite(("ball",)),
+                    "ball_rotation": BodyRotationWrite(("ball",)),
+                    "ball_linear_velocity": BodyLinearVelocityWrite(("ball",)),
+                    "ball_angular_velocity": BodyAngularVelocityWrite(("ball",)),
+                }
+            )
+        self._reset_program = self.sim.write_compiler.compile(resets, reset=True)
+        self._torso_reset_position = self._reset_program.buffer("torso_position")[:, 0]
+        self._torso_reset_rotation = self._reset_program.buffer("torso_rotation")[:, 0]
+        self._torso_reset_linear_velocity = self._reset_program.buffer("torso_linear_velocity")[:, 0]
+        self._torso_reset_angular_velocity = self._reset_program.buffer("torso_angular_velocity")[:, 0]
+        self._joint_reset_position = self._reset_program.buffer("joints_position")
+        self._joint_reset_velocity = self._reset_program.buffer("joints_velocity")
+        if cfg.include_ball:
+            self._ball_reset_position = self._reset_program.buffer("ball_position")[:, 0]
+            self._ball_reset_rotation = self._reset_program.buffer("ball_rotation")[:, 0]
+            self._ball_reset_linear_velocity = self._reset_program.buffer("ball_linear_velocity")[:, 0]
+            self._ball_reset_angular_velocity = self._reset_program.buffer("ball_angular_velocity")[:, 0]
         self._cfg = cfg
-        self._torso = self._model.get_link("torso")
-        self._floor_geom = self._model.get_geom("floor")
 
-        self._workspace_site = None
-        if cfg.include_origin:
-            self._workspace_site = self._model.get_site("workspace")
-
-        self._target_site = None
-        if cfg.include_target:
-            self._target_site = self._model.get_site("target")
-
-        self._ball_body = None
-        self._ball_geom = None
+        self._leg_geom_names: list[str] = []
+        self._leg_geom_slices: list[slice] = []
         if cfg.include_ball:
-            self._ball_body = self._model.get_body("ball")
-            self._ball_geom = self._model.get_geom("ball")
+            for leg_geoms in _LEG_BODY_GEOM_NAMES:
+                start = len(self._leg_geom_names)
+                for name in leg_geoms:
+                    if name not in self.model.others["geoms"]:
+                        continue
+                    self._leg_geom_names.append(name)
+                self._leg_geom_slices.append(slice(start, len(self._leg_geom_names)))
+            if not self._leg_geom_names:
+                self._leg_geom_slices = []
 
-        self._leg_ball_geoms = []
-        self._leg_ball_geom_count = 0
-        self._leg_ball_geom_slices = []
-        if cfg.include_ball:
-            try:
-                leg_body_geom_names = [
-                    ["thigh_front_left", "shin_front_left", "foot_front_left", "toe_front_left"],
-                    ["thigh_front_right", "shin_front_right", "foot_front_right", "toe_front_right"],
-                    ["thigh_back_right", "shin_back_right", "foot_back_right", "toe_back_right"],
-                    ["thigh_back_left", "shin_back_left", "foot_back_left", "toe_back_left"],
-                ]
-                leg_geoms = []
-                start = 0
-                for geom_names in leg_body_geom_names:
-                    stop = start
-                    for name in geom_names:
-                        try:
-                            geom = self._model.get_geom(name)
-                        except Exception:
-                            continue
-                        leg_geoms.append(geom)
-                        stop += 1
-                    self._leg_ball_geom_slices.append(slice(start, stop))
-                    start = stop
-                if leg_geoms:
-                    self._leg_ball_geoms = leg_geoms
-                    self._leg_ball_geom_count = len(leg_geoms)
-            except Exception:
-                self._leg_ball_geom_slices = []
-
-        self._body_dof_pos = self._model.num_dof_pos - 7 - (7 if cfg.include_ball else 0)
-        self._body_dof_vel = self._model.num_dof_vel - 6 - (6 if cfg.include_ball else 0)
+        self._body_dof_pos = self.num_dof_pos - 7 - (7 if cfg.include_ball else 0)
+        self._body_dof_vel = self.num_dof_vel - 6 - (6 if cfg.include_ball else 0)
         self._dof_pos_slice = slice(7, 7 + self._body_dof_pos)
         self._dof_vel_slice = slice(6, 6 + self._body_dof_vel)
         self._ball_pos_slice = None
         self._ball_vel_slice = None
+        self._floor_geom_size0 = float(self.model.others["geoms"]["floor"].size[0])
         if cfg.include_ball:
-            self._ball_pos_slice = slice(self._model.num_dof_pos - 7, self._model.num_dof_pos)
-            self._ball_vel_slice = slice(self._model.num_dof_vel - 6, self._model.num_dof_vel)
+            self._ball_pos_slice = slice(self.num_dof_pos - 7, self.num_dof_pos)
+            self._ball_vel_slice = slice(self.num_dof_vel - 6, self.num_dof_vel)
+            self._ball_geom_size0 = float(self.model.others["geoms"]["ball"].size[0])
+            # Leg geoms are capsules (two-entry size) or spheres (one-entry
+            # size) in every quadruped asset, so the capsule branch of the
+            # legacy shape check reduces to the size tuple length.
+            self._leg_geom_sizes = {
+                name: np.atleast_1d(np.asarray(self.model.others["geoms"][name].size, dtype=np.float32))
+                for name in self._leg_geom_names
+            }
 
-        self._init_dof_pos = self._model.compute_init_dof_pos().astype(np.float32)
+        self._init_dof_pos = self.model.init_dof_pos.copy()
         self._default_body_dof_pos = self._init_dof_pos[self._dof_pos_slice].copy()
+        # The legacy constructor took max(cfg.terrain_size, |hfield bound[3]|)
+        # when the scene defined height fields. Only quadruped_escape.xml has
+        # an hfield and its bound[3] is 0.1 < cfg default 30.0, so the config
+        # value already is the effective terrain size everywhere.
         self._terrain_size = float(cfg.terrain_size)
-        try:
-            if self._model.num_hfields:
-                hfield = self._model.get_hfield(0)
-                self._terrain_size = max(self._terrain_size, float(abs(hfield.bound[3])))
-        except Exception:
-            pass
 
         self._init_obs_space()
         self._init_action_space()
 
     def _init_obs_space(self):
-        num_obs = self._body_dof_pos + self._body_dof_vel + self._model.num_actuators
+        num_obs = self._body_dof_pos + self._body_dof_vel + self.num_actuators
         num_obs += 3  # torso velocity
         num_obs += 1  # torso upright
         num_obs += 6  # imu accel + gyro
@@ -122,8 +230,10 @@ class QuadrupedEnv(NpEnv):
         self._observation_space = gym.spaces.Box(-np.inf, np.inf, (num_obs,), dtype=np.float32)
 
     def _init_action_space(self):
-        low, high = self._model.actuator_ctrl_limits
-        self._action_space = gym.spaces.Box(low, high, (self._model.num_actuators,), dtype=np.float32)
+        ctrl_ranges = np.asarray([spec.ctrl_range for spec in self.model.actuators], dtype=np.float32)
+        self._action_space = gym.spaces.Box(
+            ctrl_ranges[:, 0], ctrl_ranges[:, 1], (self.num_actuators,), dtype=np.float32
+        )
 
     @property
     def observation_space(self) -> gym.spaces.Box:
@@ -133,7 +243,7 @@ class QuadrupedEnv(NpEnv):
     def action_space(self) -> gym.spaces.Box:
         return self._action_space
 
-    def apply_action(self, actions: np.ndarray, state: NpEnvState) -> NpEnvState:
+    def apply_action(self, actions: np.ndarray, state: ArrayEnvState) -> ArrayEnvState:
         if self._cfg.clip_env_actions:
             actions = np.clip(actions, self._action_space.low, self._action_space.high)
         actions = actions.astype(np.float32)
@@ -143,84 +253,80 @@ class QuadrupedEnv(NpEnv):
             state.info["last_actions"] = np.zeros_like(actions, dtype=np.float32)
         state.info["last_actions"] = state.info["actions"]
         state.info["actions"] = actions
-        state.data.actuator_ctrls = actions
+        ctrl = self._ctrl_writes.buffer("ctrl")
+        ctrl[:] = np.asarray(actions, dtype=np.float32)
+        self._ctrl_writes.execute()
         return state
 
-    def _sensor_value(self, data: mtx.SceneData, name: str) -> np.ndarray:
-        value = np.asarray(self._model.get_sensor_value(name, data))
-        return value.reshape(data.shape[0], -1)
+    def _torso_frame(self, rows) -> np.ndarray:
+        return _quat_to_rotation_mats(self.sim_data["torso_quat"][rows])
 
-    def _sensor_vector(self, data: mtx.SceneData, names: list[str]) -> np.ndarray:
-        if not names:
-            return np.zeros((data.shape[0], 0), dtype=np.float32)
-        values = [self._sensor_value(data, name) for name in names]
-        return np.concatenate(values, axis=-1)
-
-    def _egocentric_state(self, data: mtx.SceneData) -> np.ndarray:
-        dof_pos = data.dof_pos[:, self._dof_pos_slice]
-        dof_vel = data.dof_vel[:, self._dof_vel_slice]
-        act = data.actuator_ctrls
+    def _egocentric_state(self, rows) -> np.ndarray:
+        inputs = self.sim_data
+        dof_pos = inputs["dof_pos"][rows][:, self._dof_pos_slice]
+        dof_vel = inputs["dof_vel"][rows][:, self._dof_vel_slice]
+        act = inputs["actuator_ctrls"][rows]
         return np.concatenate([dof_pos, dof_vel, act], axis=-1)
 
-    def _torso_upright(self, data: mtx.SceneData) -> np.ndarray:
-        return self._torso.get_rotation_mat(data)[:, 2, 2]
+    def _torso_upright(self, rows) -> np.ndarray:
+        return self._torso_frame(rows)[:, 2, 2]
 
-    def _torso_velocity(self, data: mtx.SceneData) -> np.ndarray:
-        return self._sensor_value(data, "velocimeter")
+    def _torso_velocity(self, rows) -> np.ndarray:
+        return self.sim_data["velocimeter"][rows]
 
-    def _imu(self, data: mtx.SceneData) -> np.ndarray:
-        accel = self._sensor_value(data, "imu_accel")
-        gyro = self._sensor_value(data, "imu_gyro")
-        return np.concatenate([accel, gyro], axis=-1)
+    def _imu(self, rows) -> np.ndarray:
+        return self.sim_data["imu"][rows]
 
-    def _rangefinder(self, data: mtx.SceneData) -> np.ndarray:
-        readings = self._sensor_vector(data, _RANGEFINDER_SENSORS)
+    def _rangefinder(self, rows) -> np.ndarray:
+        # Shipped scenes define no rf_* sensors, so enabling include_rangefinder
+        # fails loudly here exactly like the legacy model-level sensor lookup.
+        readings = np.concatenate([self.sim_data[name][rows] for name in _RANGEFINDER_SENSORS], axis=-1)
         no_intersection = -1.0
         return np.where(readings == no_intersection, 1.0, np.tanh(readings))
 
-    def _origin(self, data: mtx.SceneData) -> np.ndarray:
-        torso_pos = self._torso.get_position(data)
-        torso_frame = self._torso.get_rotation_mat(data)
+    def _origin(self, rows) -> np.ndarray:
+        torso_pos = self.sim_data["torso_pos"][rows]
+        torso_frame = self._torso_frame(rows)
         return -np.einsum("ni,nij->nj", torso_pos, torso_frame)
 
-    def _origin_distance(self, data: mtx.SceneData) -> np.ndarray:
-        workspace_pos = self._workspace_site.get_position(data)
+    def _origin_distance(self, rows) -> np.ndarray:
+        workspace_pos = self.sim_data["workspace_pos"][rows]
         return np.linalg.norm(workspace_pos, axis=-1)
 
-    def _ball_state(self, data: mtx.SceneData) -> np.ndarray:
-        ball_pose = self._ball_body.get_pose(data)
-        ball_pos = ball_pose[:, :3]
-        torso_pos = self._torso.get_position(data)
-        torso_frame = self._torso.get_rotation_mat(data)
+    def _ball_state(self, rows) -> np.ndarray:
+        inputs = self.sim_data
+        ball_pos = inputs["ball_pos"][rows]
+        torso_pos = inputs["torso_pos"][rows]
+        torso_frame = self._torso_frame(rows)
 
         ball_rel_pos = ball_pos - torso_pos
-        root_linvel = data.dof_vel[:, :3]
-        ball_vel = data.dof_vel[:, self._ball_vel_slice]
+        root_linvel = inputs["dof_vel"][rows][:, :3]
+        ball_vel = inputs["dof_vel"][rows][:, self._ball_vel_slice]
         ball_rel_vel = ball_vel[:, :3] - root_linvel
         ball_rot_vel = ball_vel[:, 3:]
 
         stacked = np.stack([ball_rel_pos, ball_rel_vel, ball_rot_vel], axis=1)
         local = np.einsum("nij,njk->nik", stacked, torso_frame)
-        return local.reshape(data.shape[0], -1)
+        return local.reshape(-1, 9)
 
-    def _target_position(self, data: mtx.SceneData) -> np.ndarray:
-        torso_pos = self._torso.get_position(data)
-        torso_frame = self._torso.get_rotation_mat(data)
-        to_target = self._target_site.get_position(data) - torso_pos
+    def _target_position(self, rows) -> np.ndarray:
+        torso_pos = self.sim_data["torso_pos"][rows]
+        torso_frame = self._torso_frame(rows)
+        to_target = self.sim_data["target_pos"][rows] - torso_pos
         return np.einsum("ni,nij->nj", to_target, torso_frame)
 
-    def _ball_to_target_distance(self, data: mtx.SceneData) -> np.ndarray:
-        ball_pos = self._ball_body.get_pose(data)[:, :3]
-        target_pos = self._target_site.get_position(data)
+    def _ball_to_target_distance(self, rows) -> np.ndarray:
+        ball_pos = self.sim_data["ball_pos"][rows]
+        target_pos = self.sim_data["target_pos"][rows]
         return np.linalg.norm((target_pos - ball_pos)[:, :2], axis=-1)
 
     def _aggregate_leg_ball_proximity(self, geom_penalties: np.ndarray) -> np.ndarray:
-        num_legs = len(self._leg_ball_geom_slices)
+        num_legs = len(self._leg_geom_slices)
         if num_legs == 0:
             return np.zeros((geom_penalties.shape[0], 0), dtype=np.float32)
 
         leg_penalties = []
-        for geom_slice in self._leg_ball_geom_slices:
+        for geom_slice in self._leg_geom_slices:
             if geom_slice.start == geom_slice.stop:
                 leg_penalties.append(np.zeros((geom_penalties.shape[0],), dtype=np.float32))
             else:
@@ -237,15 +343,12 @@ class QuadrupedEnv(NpEnv):
         return np.linalg.norm(point - closest, axis=-1)
 
     def _geom_ball_surface_clearance(
-        self, geom: mtx.Geom, ball_pos: np.ndarray, ball_radius: float, data: mtx.SceneData
+        self, geom_name: str, geom_pos: np.ndarray, geom_quat: np.ndarray, ball_pos: np.ndarray, ball_radius: float
     ) -> np.ndarray:
-        geom_pose = geom.get_pose(data)
-        geom_pos = geom_pose[:, :3]
-        geom_quat = geom_pose[:, 3:]
-        geom_size = np.atleast_1d(np.asarray(geom.size, dtype=np.float32))
+        geom_size = self._leg_geom_sizes[geom_name]
         geom_radius = float(geom_size[0])
 
-        if getattr(geom, "shape", None) == mtx.Shape.Capsule and geom_size.shape[0] > 1 and geom_size[1] > 0.0:
+        if geom_size.shape[0] > 1 and geom_size[1] > 0.0:
             half_length = float(geom_size[1])
             axis = quaternion.rotate_vector(geom_quat, np.array([0.0, 0.0, 1.0], dtype=np.float32))
             start = geom_pos - axis * half_length
@@ -256,16 +359,22 @@ class QuadrupedEnv(NpEnv):
 
         return center_distance - (ball_radius + geom_radius)
 
-    def _leg_body_ball_penalty(self, data: mtx.SceneData) -> np.ndarray:
-        num_legs = len(self._leg_ball_geom_slices)
-        if self._ball_geom is None or self._leg_ball_geom_count == 0 or num_legs == 0:
-            return np.zeros((data.shape[0],), dtype=np.float32)
+    def _leg_body_ball_penalty(self, rows) -> np.ndarray:
+        if not self._leg_geom_names:
+            return np.zeros((self._num_envs,), dtype=np.float32)
 
-        ball_pos = self._ball_geom.get_pose(data)[:, :3]
-        ball_radius = float(np.atleast_1d(self._ball_geom.size)[0])
+        inputs = self.sim_data
+        ball_pos = inputs["ball_geom_pos"][rows]
+        ball_radius = self._ball_geom_size0
         geom_penalties = []
-        for geom in self._leg_ball_geoms:
-            clearance = self._geom_ball_surface_clearance(geom, ball_pos, ball_radius, data)
+        for geom_name in self._leg_geom_names:
+            clearance = self._geom_ball_surface_clearance(
+                geom_name,
+                inputs[f"{geom_name}__pos"][rows],
+                inputs[f"{geom_name}__quat"][rows],
+                ball_pos,
+                ball_radius,
+            )
             geom_penalties.append(
                 reward.tolerance(
                     -clearance,
@@ -322,25 +431,25 @@ class QuadrupedEnv(NpEnv):
     def _backward_penalty(self, torso_vel: np.ndarray) -> np.ndarray:
         return np.maximum(0.0, -torso_vel[:, 0])
 
-    def _escape_reward(self, data: mtx.SceneData) -> np.ndarray:
+    def _escape_reward(self, rows) -> np.ndarray:
         return reward.tolerance(
-            self._origin_distance(data),
+            self._origin_distance(rows),
             bounds=(self._terrain_size, float("inf")),
             margin=self._terrain_size,
             value_at_margin=0.0,
             sigmoid="linear",
         )
 
-    def _radial_speed_reward(self, data: mtx.SceneData) -> np.ndarray:
-        radial_speed_reward = np.zeros((data.shape[0],), dtype=np.float32)
+    def _radial_speed_reward(self) -> np.ndarray:
+        radial_speed_reward = np.zeros((self._num_envs,), dtype=np.float32)
         if not self._cfg.include_origin:
             return radial_speed_reward
 
-        torso_pos = self._torso.get_position(data)
+        torso_pos = self.sim_data["torso_pos"]
         radial_vec = torso_pos[:, :2]
         radial_norm = np.linalg.norm(radial_vec, axis=-1, keepdims=True)
         radial_dir = np.divide(radial_vec, radial_norm, out=np.zeros_like(radial_vec), where=radial_norm > 1e-6)
-        radial_speed = np.sum(data.dof_vel[:, :2] * radial_dir, axis=-1)
+        radial_speed = np.sum(self.sim_data["dof_vel"][:, :2] * radial_dir, axis=-1)
         radial_speed = np.maximum(0.0, radial_speed)
         return reward.tolerance(
             radial_speed,
@@ -350,12 +459,12 @@ class QuadrupedEnv(NpEnv):
             sigmoid="linear",
         )
 
-    def _heading_reward(self, data: mtx.SceneData) -> np.ndarray:
-        heading_reward = np.zeros((data.shape[0],), dtype=np.float32)
+    def _heading_reward(self) -> np.ndarray:
+        heading_reward = np.zeros((self._num_envs,), dtype=np.float32)
         if self._cfg.heading_reward_weight <= 0.0:
             return heading_reward
 
-        torso_frame = self._torso.get_rotation_mat(data)
+        torso_frame = self._torso_frame(slice(None))
         heading_xy = torso_frame[:, 0, :2]
         heading_norm = np.linalg.norm(heading_xy, axis=-1, keepdims=True)
         heading_dir = np.divide(heading_xy, heading_norm, out=np.zeros_like(heading_xy), where=heading_norm > 1e-6)
@@ -368,8 +477,8 @@ class QuadrupedEnv(NpEnv):
             sigmoid="linear",
         )
 
-    def _height_reward(self, data: mtx.SceneData) -> np.ndarray:
-        torso_height = self._torso.get_position(data)[:, 2]
+    def _height_reward(self) -> np.ndarray:
+        torso_height = self.sim_data["torso_pos"][:, 2]
         return reward.tolerance(
             torso_height,
             bounds=(self._cfg.stand_height, float("inf")),
@@ -387,8 +496,8 @@ class QuadrupedEnv(NpEnv):
             sigmoid="linear",
         )
 
-    def _smooth_reward(self, state: NpEnvState) -> np.ndarray:
-        smooth_reward = np.zeros((state.data.shape[0],), dtype=np.float32)
+    def _smooth_reward(self, state: ArrayEnvState) -> np.ndarray:
+        smooth_reward = np.zeros((self._num_envs,), dtype=np.float32)
         if "actions" not in state.info or "last_actions" not in state.info:
             return smooth_reward
 
@@ -405,12 +514,12 @@ class QuadrupedEnv(NpEnv):
     def _lin_vel_z_penalty(self, torso_vel: np.ndarray) -> np.ndarray:
         return np.square(torso_vel[:, 2]).astype(np.float32)
 
-    def _ang_vel_xy_penalty(self, data: mtx.SceneData) -> np.ndarray:
-        imu = self._imu(data)
+    def _ang_vel_xy_penalty(self) -> np.ndarray:
+        imu = self.sim_data["imu"]
         return np.sum(np.square(imu[:, 3:5]), axis=1).astype(np.float32)
 
-    def _similar_to_default_penalty(self, data: mtx.SceneData) -> np.ndarray:
-        body_dof_pos = data.dof_pos[:, self._dof_pos_slice]
+    def _similar_to_default_penalty(self) -> np.ndarray:
+        body_dof_pos = self.sim_data["dof_pos"][:, self._dof_pos_slice]
         return np.sum(np.abs(body_dof_pos - self._default_body_dof_pos), axis=1).astype(np.float32)
 
     def _locomotion_reward_terms(
@@ -469,24 +578,24 @@ class QuadrupedEnv(NpEnv):
         rewards = {name: value * reward_scales[name] for name, value in reward_terms.items()}
         return sum(rewards.values())
 
-    def _get_obs(self, data: mtx.SceneData) -> np.ndarray:
+    def compute_observation(self, state: ArrayEnvState) -> ArrayEnvState:
         parts = [
-            self._egocentric_state(data),
-            self._torso_velocity(data),
-            self._torso_upright(data).reshape(data.shape[0], 1),
-            self._imu(data),
+            self._egocentric_state(slice(None)),
+            self._torso_velocity(slice(None)),
+            self._torso_upright(slice(None)).reshape(-1, 1),
+            self._imu(slice(None)),
         ]
 
         if self._cfg.include_origin:
-            parts.append(self._origin(data))
+            parts.append(self._origin(slice(None)))
         if self._cfg.include_rangefinder:
-            parts.append(self._rangefinder(data))
+            parts.append(self._rangefinder(slice(None)))
         if self._cfg.include_ball:
-            parts.append(self._ball_state(data))
+            parts.append(self._ball_state(slice(None)))
         if self._cfg.include_target:
-            parts.append(self._target_position(data))
+            parts.append(self._target_position(slice(None)))
 
-        return np.concatenate(parts, axis=-1).astype(np.float32)
+        return state.replace(obs=np.concatenate(parts, axis=-1).astype(np.float32))
 
     def _locomotion_reward_info(self, num_envs: int) -> dict:
         return {
@@ -532,18 +641,18 @@ class QuadrupedEnv(NpEnv):
             "total": np.zeros((num_envs,), dtype=np.float32),
         }
 
-    def _base_locomotion_components(self, data: mtx.SceneData, state: NpEnvState) -> dict[str, np.ndarray]:
-        torso_vel = self._torso_velocity(data)
+    def _base_locomotion_components(self, state: ArrayEnvState) -> dict[str, np.ndarray]:
+        torso_vel = self._torso_velocity(slice(None))
         return {
             "move": self._move_reward(torso_vel),
             "backward": self._backward_penalty(torso_vel),
-            "height": self._height_reward(data),
+            "height": self._height_reward(),
             "lateral": self._lateral_reward(torso_vel),
-            "heading": self._heading_reward(data),
+            "heading": self._heading_reward(),
             "smooth": self._smooth_reward(state),
             "lin_vel_z": self._lin_vel_z_penalty(torso_vel),
-            "ang_vel_xy": self._ang_vel_xy_penalty(data),
-            "similar_to_default": self._similar_to_default_penalty(data),
+            "ang_vel_xy": self._ang_vel_xy_penalty(),
+            "similar_to_default": self._similar_to_default_penalty(),
         }
 
     def _locomotion_reward(self, upright_reward: np.ndarray, components: dict[str, np.ndarray]) -> np.ndarray:
@@ -564,8 +673,8 @@ class QuadrupedEnv(NpEnv):
     def _build_reset_info(self, num_envs: int) -> dict:
         return {
             "Reward": self._init_reward_info(num_envs),
-            "actions": np.zeros((num_envs, self._model.num_actuators), dtype=np.float32),
-            "last_actions": np.zeros((num_envs, self._model.num_actuators), dtype=np.float32),
+            "actions": np.zeros((num_envs, self.num_actuators), dtype=np.float32),
+            "last_actions": np.zeros((num_envs, self.num_actuators), dtype=np.float32),
         }
 
     def _random_quaternion(self, num: int) -> np.ndarray:
@@ -578,84 +687,100 @@ class QuadrupedEnv(NpEnv):
         half = yaw * 0.5
         return np.stack([zeros, zeros, np.sin(half), np.cos(half)], axis=-1).astype(np.float32)
 
-    def _lift_non_contacting(self, data: mtx.SceneData, dof_pos: np.ndarray) -> np.ndarray:
+    def _execute_reset(self, env_ids: np.ndarray, dof_pos: np.ndarray, dof_vel: np.ndarray) -> None:
+        _torso_pose = dof_pos[:, :7]
+        self._torso_reset_position[env_ids] = _torso_pose[:, :3]
+        self._torso_reset_rotation[env_ids] = _torso_pose[:, 3:7]
+        self._torso_reset_linear_velocity[env_ids] = dof_vel[:, :3]
+        self._torso_reset_angular_velocity[env_ids] = dof_vel[:, 3:6]
+        self._joint_reset_position[env_ids] = dof_pos[:, self._dof_pos_slice]
+        self._joint_reset_velocity[env_ids] = dof_vel[:, self._dof_vel_slice]
+        if self._cfg.include_ball:
+            _ball_pose = dof_pos[:, self._ball_pos_slice]
+            self._ball_reset_position[env_ids] = _ball_pose[:, :3]
+            self._ball_reset_rotation[env_ids] = _ball_pose[:, 3:7]
+            self._ball_reset_linear_velocity[env_ids] = dof_vel[:, self._ball_vel_slice][:, :3]
+            self._ball_reset_angular_velocity[env_ids] = dof_vel[:, self._ball_vel_slice][:, 3:6]
+        self._reset_program.execute(env_ids)
+
+    def _lift_non_contacting(self, env_ids: np.ndarray, dof_pos: np.ndarray, dof_vel: np.ndarray) -> np.ndarray:
+        row_ids = np.asarray(env_ids, dtype=np.int64)
+        dof_vel = np.ascontiguousarray(dof_vel, dtype=np.float32)
         z = dof_pos[:, 2].copy()
-        pending = np.ones((data.shape[0],), dtype=bool)
+        pending = np.ones((len(env_ids),), dtype=bool)
         for _ in range(1000):
             if not pending.any():
                 break
             dof_pos[pending, 2] = z[pending]
-            data.set_dof_pos(dof_pos, self._model)
-            self._model.forward_kinematic(data)
-            num_contacts = self._model.get_contact_query(data).num_contacts
-            pending = num_contacts > 0
+            self._execute_reset(env_ids, np.ascontiguousarray(dof_pos, dtype=np.float32), dof_vel)
+            self.sim_data.execute(row_ids)
+            # Contact iff any declared collidable geom pair is colliding; this
+            # reproduces the legacy global ``num_contacts > 0`` check exactly.
+            pending = self.sim_data["colliding"][env_ids].max(axis=-1) > 0
             z[pending] += 0.01
         return dof_pos
 
-    def _finish_reset(self, data: mtx.SceneData, dof_pos: np.ndarray, dof_vel: np.ndarray) -> tuple[np.ndarray, dict]:
-        dof_pos = self._lift_non_contacting(data, dof_pos)
-        data.set_dof_pos(dof_pos, self._model)
-        data.set_dof_vel(dof_vel)
-        self._model.forward_kinematic(data)
+    def _finish_reset(self, env_ids: np.ndarray, dof_pos: np.ndarray, dof_vel: np.ndarray) -> dict:
+        dof_pos = self._lift_non_contacting(env_ids, dof_pos, dof_vel)
+        self._execute_reset(
+            env_ids, np.ascontiguousarray(dof_pos, dtype=np.float32), np.ascontiguousarray(dof_vel, dtype=np.float32)
+        )
+        self.sim_data.execute(np.asarray(env_ids, dtype=np.int64))
 
-        obs = self._get_obs(data)
-        info = self._build_reset_info(int(data.shape[0]))
-        return obs, info
+        info = self._build_reset_info(len(env_ids))
+        return info
 
 
-@registry.env("dm-quadruped-walk", "np")
-@registry.env("dm-quadruped-run", "np")
+@registry.env("dm-quadruped-walk")
+@registry.env("dm-quadruped-run")
 class QuadrupedLocomotionEnv(QuadrupedEnv):
     def _init_reward_info(self, num_envs: int) -> dict:
         return self._locomotion_reward_info(num_envs)
 
-    def update_state(self, state: NpEnvState) -> NpEnvState:
-        data = state.data
-        obs = self._get_obs(data)
-
-        torso_upright = self._torso_upright(data)
+    def compute_transition(self, state: ArrayEnvState) -> ArrayEnvState:
+        self.sim_data.execute()
+        inputs = self.sim_data
+        torso_upright = self._torso_upright(slice(None))
         upright_reward = self._upright_reward(torso_upright)
-        locomotion_components = self._base_locomotion_components(data, state)
+        locomotion_components = self._base_locomotion_components(state)
         rwd = self._locomotion_reward(upright_reward, locomotion_components)
 
         reward_components = {"upright": upright_reward}
         reward_components.update(locomotion_components)
         reward_components["total"] = rwd
 
-        terminated = np.isnan(obs).any(axis=-1)
+        terminated = np.isnan(inputs["dof_pos"]).any(axis=-1) | np.isnan(inputs["dof_vel"]).any(axis=-1)
         rwd = np.where(terminated, 0.0, rwd).astype(np.float32)
         state.info["Reward"] = reward_components
 
-        return state.replace(obs=obs, reward=rwd, terminated=terminated)
+        return state.replace(reward=rwd, terminated=terminated)
 
-    def reset(self, data: mtx.SceneData) -> tuple[np.ndarray, dict]:
-        data.reset(self._model)
-        num = int(data.shape[0])
+    def reset(self, env_ids: np.ndarray):
+        num = len(env_ids)
         dof_pos = np.tile(self._init_dof_pos, (num, 1))
-        dof_vel = np.zeros((num, self._model.num_dof_vel), dtype=np.float32)
+        dof_vel = np.zeros((num, self.num_dof_vel), dtype=np.float32)
 
         if self._cfg.fix_heading:
             dof_pos[:, 3:7] = np.tile(np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32), (num, 1))
         else:
             dof_pos[:, 3:7] = self._random_quaternion(num)
 
-        return self._finish_reset(data, dof_pos, dof_vel)
+        return self._finish_reset(env_ids, dof_pos, dof_vel)
 
 
-@registry.env("dm-quadruped-escape", "np")
+@registry.env("dm-quadruped-escape")
 class QuadrupedEscapeEnv(QuadrupedLocomotionEnv):
     def _init_reward_info(self, num_envs: int) -> dict:
         return self._escape_reward_info(num_envs)
 
-    def update_state(self, state: NpEnvState) -> NpEnvState:
-        data = state.data
-        obs = self._get_obs(data)
-
-        torso_upright = self._torso_upright(data)
+    def compute_transition(self, state: ArrayEnvState) -> ArrayEnvState:
+        self.sim_data.execute()
+        inputs = self.sim_data
+        torso_upright = self._torso_upright(slice(None))
         upright_reward = self._upright_reward(torso_upright)
-        locomotion_components = self._base_locomotion_components(data, state)
-        escape_reward = self._escape_reward(data)
-        radial_speed_reward = self._radial_speed_reward(data)
+        locomotion_components = self._base_locomotion_components(state)
+        escape_reward = self._escape_reward(slice(None))
+        radial_speed_reward = self._radial_speed_reward()
 
         reward_terms = self._locomotion_reward_terms(
             upright_reward,
@@ -684,40 +809,36 @@ class QuadrupedEscapeEnv(QuadrupedLocomotionEnv):
             }
         )
 
-        terminated = np.isnan(obs).any(axis=-1)
+        terminated = np.isnan(inputs["dof_pos"]).any(axis=-1) | np.isnan(inputs["dof_vel"]).any(axis=-1)
         rwd = np.where(terminated, 0.0, rwd).astype(np.float32)
         state.info["Reward"] = reward_components
 
-        return state.replace(obs=obs, reward=rwd, terminated=terminated)
+        return state.replace(reward=rwd, terminated=terminated)
 
 
-@registry.env("dm-quadruped-fetch", "np")
+@registry.env("dm-quadruped-fetch")
 class QuadrupedFetchEnv(QuadrupedEnv):
     def _init_reward_info(self, num_envs: int) -> dict:
         return self._fetch_reward_info(num_envs)
 
-    def update_state(self, state: NpEnvState) -> NpEnvState:
-        data = state.data
-        obs = self._get_obs(data)
-
-        torso_upright = self._torso_upright(data)
+    def compute_transition(self, state: ArrayEnvState) -> ArrayEnvState:
+        self.sim_data.execute()
+        inputs = self.sim_data
+        torso_upright = self._torso_upright(slice(None))
         upright_reward = self._upright_reward(torso_upright)
-        torso_height = self._torso.get_position(data)[:, 2]
+        torso_height = inputs["torso_pos"][:, 2]
         stability_gate = self._fetch_stability_gate(torso_upright, torso_height)
         target_radius = float(self._cfg.target_radius)
-        if self._target_site is not None:
-            try:
-                target_radius = float(np.atleast_1d(self._target_site.size)[0])
-            except Exception:
-                pass
+        if self._cfg.include_target:
+            target_radius = _FETCH_TARGET_SITE_RADIUS
 
-        ball_pos = self._ball_body.get_pose(data)[:, :3]
-        target_pos = self._target_site.get_position(data)
-        torso_pos = self._torso.get_position(data)
+        ball_pos = inputs["ball_pos"]
+        target_pos = inputs["target_pos"]
+        torso_pos = inputs["torso_pos"]
         to_target = target_pos[:, :2] - ball_pos[:, :2]
         to_target_norm = np.linalg.norm(to_target, axis=-1, keepdims=True)
         to_target_dir = np.where(to_target_norm > 1e-6, to_target / to_target_norm, 0.0)
-        torso_frame = self._torso.get_rotation_mat(data)
+        torso_frame = self._torso_frame(slice(None))
         heading_xy = torso_frame[:, 0, :2]
         heading_norm = np.linalg.norm(heading_xy, axis=-1, keepdims=True)
         heading_dir = np.where(heading_norm > 1e-6, heading_xy / heading_norm, 0.0)
@@ -790,7 +911,7 @@ class QuadrupedFetchEnv(QuadrupedEnv):
         stage_dist = np.linalg.norm(to_stage, axis=-1)
         stage_dir = np.where(stage_dist[:, None] > 1e-6, to_stage / stage_dist[:, None], 0.0)
 
-        speed_to_stage = np.sum(data.dof_vel[:, :2] * stage_dir, axis=-1)
+        speed_to_stage = np.sum(inputs["dof_vel"][:, :2] * stage_dir, axis=-1)
         stage_move = reward.tolerance(
             speed_to_stage,
             bounds=(self._cfg.fetch_stage_speed, float("inf")),
@@ -808,13 +929,13 @@ class QuadrupedFetchEnv(QuadrupedEnv):
         )
 
         fetch_reward = reward.tolerance(
-            self._ball_to_target_distance(data),
+            self._ball_to_target_distance(slice(None)),
             bounds=(0.0, target_radius),
             margin=self._cfg.fetch_reward_margin,
             value_at_margin=0.0,
             sigmoid="linear",
         )
-        ball_vel = data.dof_vel[:, self._ball_vel_slice][:, :2]
+        ball_vel = inputs["dof_vel"][:, self._ball_vel_slice][:, :2]
         ball_speed_to_target = np.sum(ball_vel * to_target_dir, axis=-1)
         push_reward = reward.tolerance(
             np.maximum(0.0, ball_speed_to_target),
@@ -824,7 +945,7 @@ class QuadrupedFetchEnv(QuadrupedEnv):
             sigmoid="linear",
         )
         away_penalty = (1.0 - ready_gate) * np.maximum(0.0, -ball_speed_to_target)
-        leg_ball_penalty = self._leg_body_ball_penalty(data)
+        leg_ball_penalty = self._leg_body_ball_penalty(slice(None))
 
         rwd = stability_gate * upright_reward * stage_move
         rwd -= self._cfg.fetch_backward_penalty_weight * backward_penalty
@@ -854,22 +975,21 @@ class QuadrupedFetchEnv(QuadrupedEnv):
             "total": rwd,
         }
 
-        terminated = np.isnan(obs).any(axis=-1)
+        terminated = np.isnan(inputs["dof_pos"]).any(axis=-1) | np.isnan(inputs["dof_vel"]).any(axis=-1)
         terminated |= self._fetch_fall_terminated(torso_upright, torso_height)
         rwd = np.where(terminated, 0.0, rwd).astype(np.float32)
         for key, value in reward_components.items():
             reward_components[key] = np.where(terminated, 0.0, value).astype(np.float32)
         state.info["Reward"] = reward_components
 
-        return state.replace(obs=obs, reward=rwd, terminated=terminated)
+        return state.replace(reward=rwd, terminated=terminated)
 
-    def reset(self, data: mtx.SceneData) -> tuple[np.ndarray, dict]:
-        data.reset(self._model)
-        num = int(data.shape[0])
+    def reset(self, env_ids: np.ndarray):
+        num = len(env_ids)
         dof_pos = np.tile(self._init_dof_pos, (num, 1))
-        dof_vel = np.zeros((num, self._model.num_dof_vel), dtype=np.float32)
+        dof_vel = np.zeros((num, self.num_dof_vel), dtype=np.float32)
 
-        floor_radius = float(self._floor_geom.size[0])
+        floor_radius = self._floor_geom_size0
         if floor_radius <= 0.0:
             floor_radius = self._terrain_size
         spawn_radius = 0.12 * floor_radius
@@ -881,8 +1001,7 @@ class QuadrupedFetchEnv(QuadrupedEnv):
         ball_xy = np.random.uniform(-spawn_radius, spawn_radius, size=(num, 2))
         ball_qpos = self._ball_pos_slice
         dof_pos[:, ball_qpos.start : ball_qpos.start + 2] = ball_xy
-        ball_radius = float(self._ball_geom.size[0]) if self._ball_geom is not None else 0.15
-        dof_pos[:, ball_qpos.start + 2] = ball_radius
+        dof_pos[:, ball_qpos.start + 2] = self._ball_geom_size0
         dof_pos[:, ball_qpos.start + 3 : ball_qpos.stop] = np.tile(
             np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32), (num, 1)
         )
@@ -890,4 +1009,4 @@ class QuadrupedFetchEnv(QuadrupedEnv):
         ball_qvel = self._ball_vel_slice
         dof_vel[:, ball_qvel.start : ball_qvel.stop] = 0.0
 
-        return self._finish_reset(data, dof_pos, dof_vel)
+        return self._finish_reset(env_ids, dof_pos, dof_vel)

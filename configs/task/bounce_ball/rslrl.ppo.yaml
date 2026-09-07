@@ -1,0 +1,30 @@
+# @package _global_
+# Task bounce_ball: rslrl.ppo shared training recipe.
+defaults:
+  - /algo_base@algo: rslrl.ppo
+  - _self_
+task:
+  env: bounce_ball
+  rllib: rslrl
+  algo: ppo
+  train_backend: null
+num_envs: 2048
+play_num_envs: 16
+seed: 42
+algo:
+  num_steps_per_env: 128
+  max_iterations: 400
+  actor:
+    hidden_dims:
+      - 64
+      - 64
+      - 64
+  critic:
+    hidden_dims:
+      - 64
+      - 64
+      - 64
+  algorithm:
+    learning_rate: 0.001
+    num_learning_epochs: 2
+    entropy_coef: 0.005

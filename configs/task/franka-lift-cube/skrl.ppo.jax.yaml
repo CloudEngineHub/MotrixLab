@@ -1,0 +1,10 @@
+# @package _global_
+# Task franka-lift-cube: skrl.ppo, train_backend=jax delta.
+defaults:
+  - /task/franka-lift-cube/skrl.ppo@_global_
+  - _self_
+task:
+  train_backend: jax
+algo:
+  agent:
+    learning_epochs: 4

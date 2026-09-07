@@ -1,0 +1,11 @@
+# @package _global_
+# Task dm-runner: skrl.ppo, train_backend=jax delta.
+defaults:
+  - /task/dm-runner/skrl.ppo@_global_
+  - _self_
+task:
+  train_backend: jax
+algo:
+  agent:
+    learning_epochs: 4
+    mini_batches: 4

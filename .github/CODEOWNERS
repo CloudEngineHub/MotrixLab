@@ -1,0 +1,4 @@
+# Replace @Motphys with the final maintainer account or team before enabling
+# required code-owner review on the default branch.
+* @Motphys
+.github/workflows/ @Motphys

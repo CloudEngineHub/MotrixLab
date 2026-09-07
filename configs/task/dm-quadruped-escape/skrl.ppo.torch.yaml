@@ -1,0 +1,10 @@
+# @package _global_
+# Task dm-quadruped-escape: skrl.ppo, train_backend=torch delta.
+defaults:
+  - /task/dm-quadruped-escape/skrl.ppo@_global_
+  - _self_
+task:
+  train_backend: torch
+algo:
+  trainer:
+    timesteps: 27000

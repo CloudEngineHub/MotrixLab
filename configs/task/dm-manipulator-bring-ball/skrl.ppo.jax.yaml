@@ -1,0 +1,11 @@
+# @package _global_
+# Task dm-manipulator-bring-ball: skrl.ppo, train_backend=jax delta.
+defaults:
+  - /task/dm-manipulator-bring-ball/skrl.ppo@_global_
+  - _self_
+task:
+  train_backend: jax
+algo:
+  agent:
+    learning_rate: 0.0003
+    entropy_loss_scale: 0.001

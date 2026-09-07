@@ -1,59 +1,91 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
 
 import gymnasium as gym
-import motrixsim as mtx
 import numpy as np
 
-from motrix_envs import registry
+from motrix_env_core import registry
+from motrix_env_core.array.env import ArrayEnvState
+from motrix_env_core.direct import reward
+from motrix_env_core.direct.env import DirectEnv
+from motrix_env_core.sim import (
+    BatchLinkQuaternionQuery,
+    BodyJointPositionLimitsQuery,
+    BodyJointPositionWrite,
+    DofPositionQuery,
+    DofVelocityQuery,
+    LinkPositionQuery,
+    SensorValuesQuery,
+)
+from motrix_env_core.sim.write import BodyJointVelocityWrite, CtrlTargetsWrite
 from motrix_envs.basic.walker.cfg import WalkerEnvCfg
-from motrix_envs.np import reward
-from motrix_envs.np.env import NpEnv, NpEnvState
+
+_WALKER_LINKS = ("torso", "right_thigh", "right_leg", "right_foot", "left_thigh", "left_leg", "left_foot")
+
+_SIM_DATA_QUERIES = {
+    "link_quats": BatchLinkQuaternionQuery(links=_WALKER_LINKS),
+    "torso_pos": LinkPositionQuery(link="torso"),
+    "torso_subtreelinvel": SensorValuesQuery(sensors=("torso_subtreelinvel",)),
+    "dof_pos": DofPositionQuery(),
+    "dof_vel": DofVelocityQuery(),
+}
+_SIM_MODEL_QUERIES = {"joint_position_limits": BodyJointPositionLimitsQuery(body="torso")}
 
 
-@registry.env("dm-walker", "np")
-@registry.env("dm-runner", "np")
-@registry.env("dm-stander", "np")
-class Walker2DEnv(NpEnv):
+def _quat_to_rotation_mats(quats: np.ndarray) -> np.ndarray:
+    """Convert (x, y, z, w) quaternions, shape (..., 4), to rotation mats (..., 3, 3)."""
+    x, y, z, w = quats[..., 0], quats[..., 1], quats[..., 2], quats[..., 3]
+    mats = np.empty(quats.shape[:-1] + (3, 3), dtype=quats.dtype)
+    mats[..., 0, 0] = 1 - 2 * (y * y + z * z)
+    mats[..., 0, 1] = 2 * (x * y - z * w)
+    mats[..., 0, 2] = 2 * (x * z + y * w)
+    mats[..., 1, 0] = 2 * (x * y + z * w)
+    mats[..., 1, 1] = 1 - 2 * (x * x + z * z)
+    mats[..., 1, 2] = 2 * (y * z - x * w)
+    mats[..., 2, 0] = 2 * (x * z - y * w)
+    mats[..., 2, 1] = 2 * (y * z + x * w)
+    mats[..., 2, 2] = 1 - 2 * (x * x + y * y)
+    return mats
+
+
+@registry.env("dm-walker")
+@registry.env("dm-runner")
+@registry.env("dm-stander")
+class Walker2DEnv(DirectEnv):
     _observation_space: gym.spaces.Box
     _action_space: gym.spaces.Box
 
-    def __init__(self, cfg: WalkerEnvCfg, num_envs=1):
-        super().__init__(cfg, num_envs)
+    def __init__(self, cfg: WalkerEnvCfg, num_envs=1, backend: str | None = None):
+        super().__init__(cfg, num_envs, backend=backend)
+        self.model = self.sim.compile_model(_SIM_MODEL_QUERIES)
+        self.sim_data = self.sim.compile_reads(_SIM_DATA_QUERIES)
+        self._ctrl_writes = self.sim.write_compiler.compile({"ctrl": CtrlTargetsWrite()})
+        self._reset_program = self.sim.write_compiler.compile(
+            {"walker_position": BodyJointPositionWrite("torso"), "walker_velocity": BodyJointVelocityWrite("torso")},
+            reset=True,
+        )
+        self._reset_position = self._reset_program.buffer("walker_position")
+        self._reset_velocity = self._reset_program.buffer("walker_velocity")
         self._init_obs_space()
         self._init_action_space()
-        self._torso = self._model.get_link("torso")
+        self._num_links = len(_WALKER_LINKS)
         self._move_speed = cfg.move_speed
-        self._joint_limits = self._model.joint_limits
+        self._joint_pos_lower, self._joint_pos_upper = self.model.others["joint_position_limits"]
         self._stand_height = cfg.stand_height
 
     def _init_obs_space(self):
-        model = self._model
         num = 0
-        num += (model.num_links - 1) * 2  # planar rotation (x,z) for each link except the root
+        num += (len(_WALKER_LINKS) - 1) * 2  # planar rotation (x,z) per link except root
         num += 1  # torso height
-        num += model.num_dof_vel
+        num += self.num_dof_vel
         self._observation_space = gym.spaces.Box(-np.inf, np.inf, (num,), dtype=np.float32)
 
     def _init_action_space(self):
-        model = self._model
-
+        ctrl_ranges = np.asarray([spec.ctrl_range for spec in self.model.actuators], dtype=np.float32)
         self._action_space = gym.spaces.Box(
-            model.actuator_ctrl_limits[0],
-            model.actuator_ctrl_limits[1],
-            (model.num_actuators,),
+            ctrl_ranges[:, 0],
+            ctrl_ranges[:, 1],
+            (self.num_actuators,),
             dtype=np.float32,
         )
 
@@ -65,34 +97,35 @@ class Walker2DEnv(NpEnv):
     def action_space(self) -> gym.spaces.Box:
         return self._action_space
 
-    def apply_action(self, actions, state):
-        state.data.actuator_ctrls = actions
+    def apply_action(self, actions, state: ArrayEnvState):
+        ctrl = self._ctrl_writes.buffer("ctrl")
+        ctrl[:] = np.asarray(actions, dtype=np.float32)
+        self._ctrl_writes.execute()
         return state
 
-    def _get_obs(self, data: mtx.SceneData) -> np.ndarray:
-        num_env = data.shape[0]
-        link_rotations = self._model.get_link_rotation_mats(data)
-        dof_vel = data.dof_vel
+    def compute_observation(self, state: ArrayEnvState) -> ArrayEnvState:
+        inputs = self.sim_data
+        num_env = self._num_envs
+        link_rotations = _quat_to_rotation_mats(inputs["link_quats"])
+        dof_vel = inputs["dof_vel"]
         up_right = link_rotations[:, 0, 2, 2].reshape(num_env, 1)  # 1
         orientations = link_rotations[:, 1:, [0, 0], [2, 0]].reshape(num_env, -1)  # (num_links - 1) * 2
         obs = np.concatenate([orientations, up_right, dof_vel], axis=-1)
-        return obs
+        return state.replace(obs=obs)
 
-    def update_state(self, state: NpEnvState) -> NpEnvState:
-        data = state.data
+    def compute_transition(self, state: ArrayEnvState) -> ArrayEnvState:
+        self.sim_data.execute()
+        inputs = self.sim_data
+        # === compute termination inputs ===
+        dof_vel = inputs["dof_vel"]
 
-        # === compute obs ====
-        obs = self._get_obs(data)
-        offset = (self._model.num_links - 1) * 2 + 1
-        dof_vel = obs[:, offset:]
-
-        torso_upright = self._torso.get_rotation_mat(data)[:, 2, 2]
-        torso_height = self._torso.get_position(data)[:, 2]
-        torso_vel = self._model.get_sensor_value("torso_subtreelinvel", data)
+        torso_upright = _quat_to_rotation_mats(inputs["link_quats"][:, 0])[:, 2, 2]
+        torso_height = inputs["torso_pos"][:, 2]
+        torso_vel = inputs["torso_subtreelinvel"]
         horizontal_velocity = torso_vel[:, 0]
 
         # ==== compute terminated
-        terminated = np.isnan(dof_vel).any(axis=-1)
+        terminated = np.isnan(inputs["dof_pos"]).any(axis=-1) | np.isnan(dof_vel).any(axis=-1)
 
         # ==== compute reward
         rwd_height = reward.tolerance(
@@ -125,25 +158,26 @@ class Walker2DEnv(NpEnv):
         rwd[terminated] = 0.0
 
         return state.replace(
-            obs=obs,
             reward=rwd,
             terminated=terminated,
         )
 
-    def reset(self, data: mtx.SceneData) -> tuple[np.ndarray, dict]:
-        data.reset(self._model)
-        num_reset = data.shape[0]
+    def reset(self, env_ids: np.ndarray) -> dict:
+        num_reset = len(env_ids)
 
-        dof_pos = np.zeros((num_reset, self._model.num_dof_pos))
+        dof_pos = np.zeros((num_reset, self._reset_position.shape[1]))
         dof_pos[:, 2] = np.random.uniform(low=-np.pi, high=np.pi, size=(num_reset,))  # randomize root yaw
         dof_pos[:, 3:] = np.random.uniform(
-            low=self._joint_limits[0, 3:],
-            high=self._joint_limits[1, 3:],
-            size=(num_reset, self._model.num_dof_pos - 3),
+            low=self._joint_pos_lower[3:],
+            high=self._joint_pos_upper[3:],
+            size=(num_reset, self._reset_position.shape[1] - 3),
         )  # randomize other joint angles
-        data.set_dof_pos(dof_pos, self._model)
-        self._model.forward_kinematic(data)
-        obs = self._get_obs(data)
+        dof_vel = np.zeros((num_reset, self._reset_velocity.shape[1]), dtype=np.float32)
+
+        self._reset_position[env_ids] = np.asarray(dof_pos, np.float32)
+        self._reset_velocity[env_ids] = dof_vel
+        self._reset_program.execute(env_ids)
+        self.sim_data.execute(np.asarray(env_ids, np.int64))
         rewards = {
             "height": np.zeros((num_reset,)),
             "upright": np.zeros((num_reset,)),
@@ -152,4 +186,4 @@ class Walker2DEnv(NpEnv):
         if self._move_speed > 0.0:
             rewards["move"] = np.zeros((num_reset,))
 
-        return obs, {"Reward": rewards}
+        return {"Reward": rewards}

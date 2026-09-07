@@ -1,0 +1,25 @@
+[build-system]
+requires = ["uv_build>=0.11.23,<0.12"]
+build-backend = "uv_build"
+
+[project]
+name = "motrix-deploy-tasks"
+version = "0.4.0b0"
+description = "Concrete policy deployment tasks for MotrixLab."
+authors = [{ name = "Motphys", email = "developers@motphys.com" }]
+requires-python = "==3.10.*"
+readme = "README.md"
+license = "Apache-2.0"
+dependencies = [
+    "motrix-deploy",
+    "motrix-env-core",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+onnx = ["motrix-deploy[onnx]"]
+mujoco = ["motrix-deploy-mujoco"]
+unitree = ["motrix-deploy-unitree"]
+
+[project.scripts]
+motrix-deploy = "motrix_deploy_tasks:main"

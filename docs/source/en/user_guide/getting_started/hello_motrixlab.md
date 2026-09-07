@@ -7,7 +7,7 @@ This tutorial demonstrates the MotrixLab workflow through a simple example - loa
 We provide a simple script to visualize an environment without executing any training. This helps you verify that system dependencies are correctly configured:
 
 ```bash
-uv run scripts/view.py --env cartpole
+uv run scripts/view.py env=cartpole
 ```
 
 This will open a visualization window showing the cartpole physics simulation environment with random actions for demonstration.
@@ -17,7 +17,7 @@ This will open a visualization window showing the cartpole physics simulation en
 Start training the cartpole balancing task:
 
 ```bash
-uv run scripts/train.py --env cartpole
+uv run scripts/train.py task=cartpole/skrl.ppo
 ```
 
 The training process will automatically:
@@ -36,7 +36,7 @@ Training results will be saved in the `runs/cartpole/` directory, including:
 If you want to observe the model's learning process during training, you can enable visualization rendering:
 
 ```bash
-uv run scripts/train.py --env cartpole --render
+uv run scripts/train.py task=cartpole/skrl.ppo render=true
 ```
 
 ### 🎮 Interactive Rendering Control
@@ -65,13 +65,13 @@ After training is complete, test the trained policy:
 
 ```bash
 # Automatically find best policy for testing (recommended)
-uv run scripts/play.py --env cartpole
+uv run scripts/play.py env=cartpole
 
-# Manually specify policy file for testing (if you need a specific version)
-uv run scripts/play.py --env cartpole --policy runs/cartpole/YOUR_RESULT_NUMBER/best_agent.pickle
+# Manually specify a checkpoint from a metadata-backed run
+uv run scripts/play.py env=cartpole policy=/path/to/run/checkpoints/policy-file
 ```
 
-> **Tip**: The system will automatically find the latest and best policy files in the `runs/cartpole/` directory. Usually, using the auto-discovery feature is sufficient.
+> **Tip**: The system automatically finds the latest run and its best policy under `runs/cartpole/`. A manually selected checkpoint must belong to a run containing `metadata.json` and `task_config.yaml`.
 
 ## That Completes Our Example
 
@@ -81,4 +81,4 @@ Next, you can try modifying parameters to observe physical effects under differe
 
 -   Learn about the [Basic Framework](../tutorial/basic_frame.md)
 -   Study [Physics Environment Configuration](../tutorial/physics_environment.md)
--   View more [Training Examples](../demo/cartpole.md)
+-   Browse more [Environments](../envs/index.md)

@@ -1,0 +1,22 @@
+[build-system]
+requires = ["uv_build>=0.11.23,<0.12"]
+build-backend = "uv_build"
+
+[project]
+name = "motrix-env-core"
+version = "0.4.0b0"
+description = "Backend-neutral framework APIs and runtime facilities for building reinforcement learning environments."
+authors = [{ name = "Motphys", email = "developers@motphys.com" }]
+requires-python = "==3.10.*"
+readme = "README.md"
+license = "Apache-2.0"
+dependencies = [
+    "array-api-compat==1.15.0",
+    "gymnasium==1.1.1",
+    "imageio>=2.30",
+    "imageio-ffmpeg>=0.5",
+    "numba==0.61.2",
+    "numpy>=1.26",
+    "omegaconf>=2.3,<2.4",
+    "typing-extensions>=4.1",
+]

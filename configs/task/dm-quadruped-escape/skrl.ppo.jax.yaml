@@ -1,0 +1,10 @@
+# @package _global_
+# Task dm-quadruped-escape: skrl.ppo, train_backend=jax delta.
+defaults:
+  - /task/dm-quadruped-escape/skrl.ppo@_global_
+  - _self_
+task:
+  train_backend: jax
+algo:
+  trainer:
+    timesteps: 20000

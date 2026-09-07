@@ -1,0 +1,36 @@
+# @package _global_
+# Task dm-lqr-2-1: rslrl.ppo shared training recipe.
+defaults:
+  - /algo_base@algo: rslrl.ppo
+  - _self_
+task:
+  env: dm-lqr-2-1
+  rllib: rslrl
+  algo: ppo
+  train_backend: null
+num_envs: 2048
+play_num_envs: 16
+seed: 42
+algo:
+  num_steps_per_env: 64
+  max_iterations: 1500
+  actor:
+    hidden_dims:
+      - 128
+      - 128
+      - 64
+  critic:
+    hidden_dims:
+      - 128
+      - 128
+      - 64
+  algorithm:
+    learning_rate: 0.00015
+    num_learning_epochs: 8
+    num_mini_batches: 8
+    clip_param: 0.12
+    desired_kl: 0.01
+    entropy_coef: 0.001
+    gamma: 0.995
+    lam: 0.97
+    max_grad_norm: 0.5

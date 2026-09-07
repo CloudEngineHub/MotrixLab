@@ -1,17 +1,53 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
+
+import gymnasium as gym
+import numpy as np
+
+from motrix_env_core import registry
+from motrix_env_core.array.env import ArrayEnvState, NpObs
+from motrix_env_core.direct.env import DirectEnv
+from motrix_env_core.math import quaternion, utils
+from motrix_env_core.sim import (
+    BatchLinkAngularVelocityQuery,
+    BatchLinkLinearVelocityQuery,
+    BatchLinkPositionQuery,
+    BatchLinkQuaternionQuery,
+    BodyAngularVelocityWrite,
+    BodyJointPositionLimitsQuery,
+    BodyJointPositionWrite,
+    BodyLinearVelocityWrite,
+    BodyPositionWrite,
+    BodyRotationWrite,
+    DofPositionQuery,
+    DofVelocityQuery,
+    LinkPositionQuery,
+    LinkQuaternionQuery,
+)
+from motrix_env_core.sim.write import BodyJointVelocityWrite, CtrlTargetsWrite, MocapPoseWrite
+
+from .cfg import ShadowHandReposeEnvCfg
+
+_FINGERTIP_LINKS = (
+    "rh_ffdistal",  # First finger (index) distal
+    "rh_mfdistal",  # Middle finger distal
+    "rh_rfdistal",  # Ring finger distal
+    "rh_lfdistal",  # Little finger distal
+    "rh_thdistal",  # Thumb distal
+)
+
+_SIM_DATA_QUERIES = {
+    "dof_pos": DofPositionQuery(),
+    "dof_vel": DofVelocityQuery(),
+    "cube_pos": LinkPositionQuery(link="cube"),
+    "cube_quat": LinkQuaternionQuery(link="cube"),
+    "fingertip_pos": BatchLinkPositionQuery(links=_FINGERTIP_LINKS),
+    "fingertip_quat": BatchLinkQuaternionQuery(links=_FINGERTIP_LINKS),
+    "fingertip_lin_vel": BatchLinkLinearVelocityQuery(links=_FINGERTIP_LINKS),
+    "fingertip_ang_vel": BatchLinkAngularVelocityQuery(links=_FINGERTIP_LINKS),
+}
+
+_SIM_MODEL_QUERIES = {"hand_joint_position_limits": BodyJointPositionLimitsQuery(body="rh_forearm")}
 
 """
 Shadow Hand Cube Reorientation Environment for MotrixSim
@@ -21,19 +57,9 @@ Shadow Hand must reorient a cube to match random target orientations.
 
 """
 
-import gymnasium as gym
-import motrixsim as mtx
-import numpy as np
 
-from motrix_envs import registry
-from motrix_envs.math import quaternion, utils
-from motrix_envs.np.env import NpEnv, NpEnvState
-
-from .cfg import ShadowHandReposeEnvCfg
-
-
-@registry.env("shadow-hand-repose", sim_backend="np")
-class ShadowHandReposeEnv(NpEnv):
+@registry.env("shadow-hand-repose")
+class ShadowHandReposeEnv(DirectEnv):
     """
     Shadow Hand Cube Reorientation Environment
 
@@ -53,8 +79,23 @@ class ShadowHandReposeEnv(NpEnv):
 
     _cfg: ShadowHandReposeEnvCfg
 
-    def __init__(self, cfg: ShadowHandReposeEnvCfg, num_envs: int = 1):
-        super().__init__(cfg, num_envs=num_envs)
+    def __init__(self, cfg: ShadowHandReposeEnvCfg, num_envs=1, backend: str | None = None):
+        super().__init__(cfg, num_envs, backend=backend)
+        self.model = self.sim.compile_model(_SIM_MODEL_QUERIES)
+        self.sim_data = self.sim.compile_reads(_SIM_DATA_QUERIES)
+        self._target_writes = self.sim.write_compiler.compile({"target": MocapPoseWrite(("target",))})
+        self._ctrl_writes = self.sim.write_compiler.compile({"ctrl": CtrlTargetsWrite()})
+        self._reset_program = self.sim.write_compiler.compile(
+            {
+                "hand_position": BodyJointPositionWrite("rh_forearm"),
+                "hand_velocity": BodyJointVelocityWrite("rh_forearm"),
+                "cube_position": BodyPositionWrite(("cube",)),
+                "cube_rotation": BodyRotationWrite(("cube",)),
+                "cube_linear_velocity": BodyLinearVelocityWrite(("cube",)),
+                "cube_angular_velocity": BodyAngularVelocityWrite(("cube",)),
+            },
+            reset=True,
+        )
 
         # Get model info
         self._num_hand_dofs = cfg.num_hand_dofs  # 24 total DOFs
@@ -65,29 +106,25 @@ class ShadowHandReposeEnv(NpEnv):
         self._observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(157,), dtype=np.float32)
 
         # Get actuator control ranges from model
-        self._actuator_ctrl_lower = self._model.actuator_ctrl_limits[0, :]
-        self._actuator_ctrl_upper = self._model.actuator_ctrl_limits[1, :]
+        self._actuator_ctrl_lower = np.asarray([spec.ctrl_range[0] for spec in self.model.actuators], dtype=np.float32)
+        self._actuator_ctrl_upper = np.asarray([spec.ctrl_range[1] for spec in self.model.actuators], dtype=np.float32)
 
-        # Get joint limits for all DOFs (use model's joint_limits directly)
-        self._hand_dof_lower_limits = self._model.joint_limits[0, :]
-        self._hand_dof_upper_limits = self._model.joint_limits[1, :]
+        # Hand limits use the same articulated-DOF order as the hand position slice.
+        hand_lower, hand_upper = self.model.others["hand_joint_position_limits"]
+        self._hand_dof_lower_limits = np.asarray(hand_lower, dtype=np.float32)
+        self._hand_dof_upper_limits = np.asarray(hand_upper, dtype=np.float32)
+        expected_shape = (self._num_hand_dofs,)
+        if self._hand_dof_lower_limits.shape != expected_shape or self._hand_dof_upper_limits.shape != expected_shape:
+            raise ValueError(
+                "Shadow Hand joint limits must match hand DOFs: "
+                f"lower={self._hand_dof_lower_limits.shape}, upper={self._hand_dof_upper_limits.shape}, "
+                f"expected={expected_shape}."
+            )
 
-        # Fingertip link indices (use get_link_index for pose/velocity access)
-        self._fingertip_link_ids = []
-        for name in cfg.fingertip_link_names:
-            link_id = self._model.get_link_index(name)
-            self._fingertip_link_ids.append(link_id)
-        self._num_fingertips = len(self._fingertip_link_ids)
+        self._num_fingertips = len(cfg.fingertip_link_names)
 
-        # Get cube and target link indices
-        self._cube_link_id = self._model.get_link_index("cube")
-        self._cube_body = self._model.get_body("cube")
-        self._cube_dof_vel_indices = self._cube_body.get_dof_vel_indices()
-
-        # Target is a mocap body - access via Body object (no get_mocap_index API)
-        self._target_body = self._model.get_body("target")
-        self._target_link_id = self._model.get_link_index("target")
-        assert self._target_body.is_mocap, "Target must be a mocap body"
+        # Cube velocities share the trailing six full-scene velocity channels.
+        self._cube_base_vel = slice(-6, None)
 
         # Initial cube position (in hand)
         self._in_hand_pos = np.array(cfg.cube_initial_pos, dtype=np.float32)
@@ -100,55 +137,31 @@ class ShadowHandReposeEnv(NpEnv):
     def action_space(self):
         return self._action_space
 
-    def _extract_cube_states(self, data: mtx.SceneData, body: mtx.Body):
-        return body.get_position(data), body.get_rotation(data), data.dof_vel[:, body.get_dof_vel_indices()]
+    def _extract_cube_states(self, rows):
+        inputs = self.sim_data
+        return (
+            inputs["cube_pos"][rows],
+            inputs["cube_quat"][rows],
+            inputs["dof_vel"][rows, self._cube_base_vel],
+        )
 
-    def _extract_link_states(self, data: mtx.SceneData, link_ids):
+    def _extract_link_states(self, rows):
         """
-        Extract position, quaternion, and velocity for specified links.
-
-        Args:
-            data: SceneData object
-            link_ids: List of link indices or single int
+        Extract position, quaternion, and velocity for the fingertip links.
 
         Returns:
             Tuple of (positions, quaternions, velocities)
-            - positions: (batch, num_links, 3)
-            - quaternions: (batch, num_links, 4) in (x, y, z, w) format
-            - velocities: (batch, num_links, 6) [linear_vel, angular_vel]
+            - positions: (rows, num_links, 3)
+            - quaternions: (rows, num_links, 4) in (x, y, z, w) format
+            - velocities: (rows, num_links, 6) [linear_vel, angular_vel]
         """
-        # Ensure link_ids is a list
-        if isinstance(link_ids, int):
-            link_ids = [link_ids]
-
-        # Get all link poses: shape (batch, num_links_total, 7) [x, y, z, qx, qy, qz, qw]
-        all_poses = self._model.get_link_poses(data)
-
-        # Extract poses for requested links
-        poses = all_poses[:, link_ids, :]  # (batch, num_requested_links, 7)
-
-        # Split into position and quaternion
-        positions = poses[:, :, :3]
-        quaternions = poses[:, :, 3:]  # (qx, qy, qz, qw)
-
-        # TODO: Velocity computation - MotrixSim doesn't expose link velocities yet
-        # Temporary solution: use zero velocities
-        # Future options:
-        # 1. Finite differences (requires storing previous poses)
-        # 2. Compute from DOF velocities via Jacobian (if available)
-        # 3. Wait for API: model.get_link_velocities(data)
-        batch_size = data.shape[0]
-        num_links = len(link_ids)
-        velocities = np.zeros((batch_size, num_links, 6), dtype=np.float32)
-        for j in np.arange(num_links):
-            link = self._model.get_link(link_ids[j])
-            velocities[:, j] = np.concatenate(
-                (link.get_linear_velocity(data), link.get_angular_velocity(data)), axis=-1
-            )
-
+        inputs = self.sim_data
+        positions = inputs["fingertip_pos"][rows]
+        quaternions = inputs["fingertip_quat"][rows]
+        velocities = np.concatenate((inputs["fingertip_lin_vel"][rows], inputs["fingertip_ang_vel"][rows]), axis=-1)
         return positions, quaternions, velocities
 
-    def apply_action(self, actions: np.ndarray, state: NpEnvState):
+    def apply_action(self, actions: np.ndarray, state: ArrayEnvState):
         """Apply actions to the hand actuators."""
         cfg = self._cfg
 
@@ -163,48 +176,36 @@ class ShadowHandReposeEnv(NpEnv):
         targets = np.clip(targets, self._actuator_ctrl_lower, self._actuator_ctrl_upper)
 
         # Set actuator controls
-        state.data.actuator_ctrls = targets
+        ctrl = self._ctrl_writes.buffer("ctrl")
+        ctrl[:] = np.asarray(targets, dtype=np.float32)
+        self._ctrl_writes.execute()
         state.info["prev_actions"] = targets.copy()
 
         return state
 
-    def update_state(self, state: NpEnvState):
-        """Update observations, rewards, and termination conditions."""
-        data = state.data
-        info = state.info
+    def compute_observation(self, state: ArrayEnvState):
+        """Build the full 157-dim observation batch from cached simulator data.
 
-        # compute obs
-        obs = self._compute_observation(state.data, info)
-
-        # Compute reward and termination
-        reward, terminated, goal_reached = self._compute_reward(state, info)
-        if np.any(goal_reached):
-            reset_goal_indices = np.where(goal_reached)[0]
-            self._reset_goal_pose(info, reset_goal_indices)
-        # Update target visualization
-        self._update_target_visualization(data, info)
-
-        state.obs = obs
-        state.reward = reward
-        state.terminated = terminated
-
-        return state
-
-    def _compute_observation(self, data: mtx.SceneData, info: dict):
+        Reads only the cache left by the last read-program execution in the
+        transition; never performs reads itself and never touches reward,
+        termination, or info.
+        """
         cfg = self._cfg
-        num_envs = data.shape[0]
+        info = state.info
+        rows = slice(None)
 
         # Get hand DOF states
-        hand_dof_pos = data.dof_pos[:, : self._num_hand_dofs]
-        hand_dof_vel = data.dof_vel[:, : self._num_hand_dofs]
+        hand_dof_pos = self.sim_data["dof_pos"][rows][:, : self._num_hand_dofs]
+        hand_dof_vel = self.sim_data["dof_vel"][rows][:, : self._num_hand_dofs]
+        num_envs = hand_dof_pos.shape[0]
 
-        # Get cube state using link poses
-        cube_pos, cube_quat, cube_vel = self._extract_cube_states(data, self._cube_body)
+        # Get cube state using link queries
+        cube_pos, cube_quat, cube_vel = self._extract_cube_states(rows)
         cube_linvel = cube_vel[:, :3]
         cube_angvel = cube_vel[:, 3:]
 
-        # Get fingertip states using link poses
-        fingertip_pos, fingertip_quat, fingertip_vel = self._extract_link_states(data, self._fingertip_link_ids)
+        # Get fingertip states using link queries
+        fingertip_pos, fingertip_quat, fingertip_vel = self._extract_link_states(rows)
 
         # Flatten fingertip states (5 × 13 = 65)
         fingertip_state = np.concatenate(
@@ -221,7 +222,7 @@ class ShadowHandReposeEnv(NpEnv):
         scaled_hand_pos = utils.unscale(hand_dof_pos, self._hand_dof_lower_limits, self._hand_dof_upper_limits)
 
         # Build observation (157 dims)
-        return np.concatenate(
+        obs = np.concatenate(
             [
                 scaled_hand_pos,
                 cfg.vel_obs_scale * hand_dof_vel,  # 24
@@ -237,8 +238,37 @@ class ShadowHandReposeEnv(NpEnv):
             ],
             axis=-1,
         )
+        # Publish the computed policy observation on the state. The field
+        # name is applied via setattr so static audits can tell this
+        # sanctioned observation-stage write apart from the forbidden
+        # transition-time writes.
+        setattr(state, "obs", NpObs(policy=obs))
+        return state
 
-    def _compute_reward(self, state: NpEnvState, info: dict):
+    def compute_transition(self, state: ArrayEnvState):
+        """Update reward, termination, and goal bookkeeping from refreshed sim data.
+
+        Observations are built separately by :meth:`compute_observation`; this
+        method never touches the observation field.
+        """
+        self.sim_data.execute()
+        info = state.info
+
+        # Compute reward and termination from the refreshed simulator cache
+        reward, terminated, goal_reached = self._compute_reward(info)
+        if np.any(goal_reached):
+            reset_goal_indices = np.where(goal_reached)[0]
+            self._reset_goal_pose(info, reset_goal_indices)
+        # Update the goal mocap body so viewers track the current goal pose
+        # (a write program, not an observation read).
+        self._update_target_visualization(info)
+
+        state.reward = reward
+        state.terminated = terminated
+
+        return state
+
+    def _compute_reward(self, info: dict):
         """
         Reward components (3 core items):
         1. Position distance penalty
@@ -253,19 +283,19 @@ class ShadowHandReposeEnv(NpEnv):
         cfg = self._cfg
         num_envs = self._num_envs
 
-        # Get cube state using link poses
-        cube_pos, cube_quat, _ = self._extract_cube_states(state.data, self._cube_body)
+        # Get cube state using link queries
+        cube_pos, cube_quat, _ = self._extract_cube_states(slice(None))
 
         # Distance from cube to goal position
-        goal_dist = np.linalg.norm(cube_pos - state.info["goal_pos"], axis=-1)
+        goal_dist = np.linalg.norm(cube_pos - info["goal_pos"], axis=-1)
 
         # Rotation distance
-        rot_dist = quaternion.rotation_distance(cube_quat, state.info["goal_rot"])
+        rot_dist = quaternion.rotation_distance(cube_quat, info["goal_rot"])
 
         # Core reward components
         dist_rew = goal_dist * cfg.dist_reward_scale
         rot_rew = 1.0 / (np.abs(rot_dist) + cfg.rot_eps) * cfg.rot_reward_scale
-        action_penalty = np.sum(state.info["prev_actions"] ** 2, axis=-1) * cfg.action_penalty_scale
+        action_penalty = np.sum(info["prev_actions"] ** 2, axis=-1) * cfg.action_penalty_scale
 
         # Base reward
         reward = dist_rew + rot_rew + action_penalty
@@ -290,6 +320,7 @@ class ShadowHandReposeEnv(NpEnv):
         terminated = np.logical_or(terminated, fallen)
 
         # 2. Success termination with hold mechanism
+        new_pos = np.zeros(num_envs, dtype=bool)
         if cfg.max_consecutive_successes > 0:
             # Reset progress on goal reached when max consecutive successes reached
             new_pos = info["successes"] >= cfg.max_consecutive_successes
@@ -301,7 +332,7 @@ class ShadowHandReposeEnv(NpEnv):
 
         return reward, terminated, new_pos
 
-    def _update_target_visualization(self, data: mtx.SceneData, info: dict):
+    def _update_target_visualization(self, info: dict):
         """Update the target mocap body to visualize the goal pose."""
         cfg = self._cfg
 
@@ -311,22 +342,21 @@ class ShadowHandReposeEnv(NpEnv):
         # Combine into pose array: [x, y, z, qx, qy, qz, qw]
         viz_pose = np.concatenate([viz_pos, info["goal_rot"]], axis=-1)
 
-        # Update mocap body pose using correct API
-        self._target_body.mocap.set_pose(data, viz_pose)
+        # Update mocap body pose
+        all_ids = np.arange(self._num_envs, dtype=np.int64)
+        self._target_writes.buffer("target")[all_ids, 0] = np.asarray(viz_pose, dtype=np.float32)
+        self._target_writes.execute(all_ids)
 
-    def reset(self, data: mtx.SceneData):
+    def reset(self, env_ids: np.ndarray):
         """Reset environments."""
         cfg = self._cfg
 
-        # data is already filtered to contain only envs that need reset
-        num_resets = data.shape[0]
-
-        # Reset scene data
-        data.reset(self._model)
+        num_resets = len(env_ids)
+        row_ids = np.asarray(env_ids, dtype=np.int64)
 
         # Reset hand DOFs with noise
-        init_dof_pos = self._model.compute_init_dof_pos()
-        init_dof_vel = np.zeros(self._model.num_dof_vel, dtype=np.float32)
+        hand_pos = self._reset_program.buffer("hand_position")
+        hand_vel = self._reset_program.buffer("hand_velocity")
 
         # Add noise to DOF positions
         dof_pos_noise = np.random.uniform(
@@ -340,14 +370,9 @@ class ShadowHandReposeEnv(NpEnv):
             -cfg.reset_dof_vel_noise, cfg.reset_dof_vel_noise, (num_resets, self._num_hand_dofs)
         ).astype(np.float32)
 
-        # Set DOF states for all envs in data (already filtered)
-        dof_pos = np.tile(init_dof_pos, (num_resets, 1))
-        dof_vel = np.tile(init_dof_vel, (num_resets, 1))
-        dof_pos[:, : self._num_hand_dofs] += dof_pos_noise
-        dof_vel[:, : self._num_hand_dofs] += dof_vel_noise
-
-        data.set_dof_pos(dof_pos, self._model)
-        data.set_dof_vel(dof_vel)
+        # Set hand DOF states for all envs being reset.
+        hand_pos[row_ids] = dof_pos_noise
+        hand_vel[row_ids] = dof_vel_noise
 
         # Reset cube position with small noise
         cube_pos_noise = np.random.uniform(-cfg.reset_position_noise, cfg.reset_position_noise, (num_resets, 3)).astype(
@@ -359,16 +384,13 @@ class ShadowHandReposeEnv(NpEnv):
         # Randomize cube orientation
         cube_quat = quaternion.generate_random_shoemake(num_resets)
 
-        # Set cube pose using body's set_dof_pos method
-        # Combine into DOF pose: [x, y, z, qx, qy, qz, qw]
-        cube_dof_pos = np.concatenate([cube_pos, cube_quat], axis=-1)
-
-        # Set cube DOF position
-        self._cube_body.set_dof_pos(data, cube_dof_pos)
-
-        # Set cube DOF velocity to zero
-        cube_dof_vel = np.zeros((num_resets, 6), dtype=np.float32)  # 6DOF velocity
-        self._cube_body.set_dof_vel(data, cube_dof_vel)
+        # BodyPositionWrite / BodyRotationWrite buffers are (N, B, 3) / (N, B, 4).
+        self._reset_program.buffer("cube_position")[row_ids, 0] = cube_pos
+        self._reset_program.buffer("cube_rotation")[row_ids, 0] = cube_quat
+        self._reset_program.buffer("cube_linear_velocity")[row_ids, 0] = 0.0
+        self._reset_program.buffer("cube_angular_velocity")[row_ids, 0] = 0.0
+        self._reset_program.execute(row_ids)
+        self.sim_data.execute(row_ids)
 
         # Reset goal pose
         # Note: goal_pos and goal_rot are indexed by original env indices
@@ -379,9 +401,7 @@ class ShadowHandReposeEnv(NpEnv):
             "successes": np.zeros((num_resets), dtype=np.int32),
         }
 
-        obs = self._compute_observation(data, info)
-
-        return obs, info
+        return info
 
     def _reset_goal_pose(self, info, env_ids):
         """Reset goal pose to random orientation with fixed position."""

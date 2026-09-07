@@ -1,0 +1,27 @@
+# @package _global_
+# Task point_mass: skrl.ppo, train_backend=jax delta.
+defaults:
+  - /task/point_mass/skrl.ppo@_global_
+  - _self_
+task:
+  train_backend: jax
+num_envs: 256
+algo:
+  models:
+    separate: true
+  agent:
+    rollouts: 16
+    learning_epochs: 4
+    discount_factor: 0.995
+    lam: 0.97
+    learning_rate_scheduler_kwargs:
+      kl_threshold: 0.02
+    grad_norm_clip: 0.1
+    value_clip: 10.0
+    clip_predicted_values: false
+    entropy_loss_scale: 0.01
+    value_loss_scale: 0.5
+    kl_threshold: 0.03
+    rewards_shaper_scale: 0.05
+  trainer:
+    timesteps: 20000

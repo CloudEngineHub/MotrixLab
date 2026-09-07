@@ -1,0 +1,14 @@
+# @package _global_
+# Task point_mass: skrl.ppo, train_backend=torch delta.
+defaults:
+  - /task/point_mass/skrl.ppo@_global_
+  - _self_
+task:
+  train_backend: torch
+algo:
+  agent:
+    learning_epochs: 5
+    learning_rate: 0.0003
+    entropy_loss_scale: 0.1
+  trainer:
+    timesteps: 3500

@@ -1,0 +1,19 @@
+# @package _global_
+# Task dm-runner: skrl.ppo shared training recipe.
+defaults:
+  - /algo_base@algo: skrl.ppo
+  - _self_
+task:
+  env: dm-runner
+  rllib: skrl
+  algo: ppo
+  train_backend: null
+num_envs: 2048
+play_num_envs: 16
+seed: 42
+algo:
+  trainer:
+    timesteps: 20000
+  agent:
+    rollouts: 24
+    learning_rate: 0.0002

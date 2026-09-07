@@ -1,0 +1,19 @@
+# @package _global_
+# Task dm-manipulator-bring-ball: skrl.ppo, train_backend=torch delta.
+defaults:
+  - /task/dm-manipulator-bring-ball/skrl.ppo@_global_
+  - _self_
+task:
+  train_backend: torch
+algo:
+  models:
+    policy:
+      hiddens:
+        - 256
+        - 256
+    value:
+      hiddens:
+        - 256
+        - 256
+  agent:
+    learning_rate: 0.0002

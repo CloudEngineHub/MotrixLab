@@ -1,3 +1,8 @@
+/**
+ * Copyright Motphys Technology Co., Ltd. 2025, 2026
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 /* Custom CSS for MotrixSim Documentation */
 
 /* Logo adjustments for PyData Sphinx Theme */
@@ -13,4 +18,143 @@
 
 .bd-page-width {
     max-width: 100rem; /* default is 88rem */
+}
+
+.task-table {
+    overflow-x: auto;
+}
+
+.task-table th:first-child,
+.task-table td:first-child {
+    width: 9rem;
+    min-width: 9rem;
+    max-width: 9rem;
+}
+
+.task-table th:nth-child(3),
+.task-table td:nth-child(3) {
+    min-width: 8rem;
+}
+
+.task-table th:last-child,
+.task-table td:last-child {
+    min-width: 7rem;
+}
+
+.task-table td code {
+    display: inline-block;
+    white-space: nowrap;
+}
+
+.task-table td code .pre {
+    white-space: nowrap;
+}
+
+.task-table td:first-child code,
+.task-table td:nth-child(3) code {
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+.task-table td:first-child code .pre,
+.task-table td:nth-child(3) code .pre {
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+.wbt-curve-thumbnail,
+.training-curve-thumbnail {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    cursor: zoom-in;
+}
+
+.wbt-curve-dialog,
+.training-curve-dialog {
+    width: min(70rem, 92vw);
+    max-width: none;
+    max-height: 92vh;
+    padding: 2.5rem 1.5rem 1.5rem;
+    border: 0;
+    border-radius: 0.5rem;
+    background: var(--pst-color-background);
+    color: var(--pst-color-text-base);
+}
+
+.wbt-curve-dialog::backdrop,
+.training-curve-dialog::backdrop {
+    background: rgb(0 0 0 / 70%);
+}
+
+.wbt-curve-dialog img,
+.training-curve-dialog img {
+    display: block;
+    width: 100%;
+    max-height: calc(92vh - 6rem);
+    object-fit: contain;
+}
+
+.wbt-curve-dialog p,
+.training-curve-dialog p {
+    margin: 0.75rem 0 0;
+    text-align: center;
+}
+
+.wbt-curve-dialog-close,
+.training-curve-dialog-close {
+    position: absolute;
+    top: 0.35rem;
+    right: 0.6rem;
+    padding: 0 0.4rem;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font-size: 1.75rem;
+    line-height: 1.2;
+    cursor: pointer;
+}
+
+.wbt-demo-video {
+    cursor: zoom-in;
+}
+
+.wbt-demo-video:focus-visible {
+    outline: 0.2rem solid var(--pst-color-accent);
+    outline-offset: 0.15rem;
+}
+
+.video-lightbox-dialog {
+    width: min(90rem, 96vw);
+    max-width: none;
+    max-height: 96vh;
+    padding: 2.5rem 1rem 1rem;
+    border: 0;
+    border-radius: 0.5rem;
+    background: #000;
+}
+
+.video-lightbox-dialog::backdrop {
+    background: rgb(0 0 0 / 80%);
+}
+
+.video-lightbox-dialog video {
+    display: block;
+    width: 100%;
+    max-height: calc(96vh - 3.5rem);
+    object-fit: contain;
+}
+
+.video-lightbox-dialog-close {
+    position: absolute;
+    top: 0.25rem;
+    right: 0.5rem;
+    padding: 0 0.4rem;
+    border: 0;
+    background: transparent;
+    color: #fff;
+    font-size: 1.75rem;
+    line-height: 1.2;
+    cursor: pointer;
 }

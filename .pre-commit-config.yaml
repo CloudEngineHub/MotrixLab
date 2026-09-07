@@ -1,0 +1,31 @@
+repos:
+  - repo: https://github.com/hashicorp/copywrite
+    rev: v0.25.3
+    hooks:
+      - id: add-headers
+        priority: 50
+      - id: add-license
+        priority: 50
+  - repo: local
+    hooks:
+      - id: dprint
+        name: Format supported files with dprint
+        entry: dprint fmt
+        language: python
+        additional_dependencies:
+          - dprint-py==0.57.0.0
+        files: \.(cjs|css|js|json|jsonc|jsx|less|md|mjs|sass|scss|ts|tsx|yaml|yml)$
+        require_serial: true
+        priority: 50
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.16
+    hooks:
+      - id: ruff-check
+        description: Lint Python files with Ruff and apply automatic fixes.
+        types_or: [python, pyi, pyproject]
+        args: [--fix]
+        priority: 50
+      - id: ruff-format
+        description: Format Python and Python stub files with Ruff.
+        types_or: [python, pyi]
+        priority: 51

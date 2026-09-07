@@ -1,0 +1,37 @@
+# @package _global_
+# Task stewart: skrl.ppo shared training recipe.
+defaults:
+  - /algo_base@algo: skrl.ppo
+  - _self_
+task:
+  env: stewart
+  rllib: skrl
+  algo: ppo
+  train_backend: null
+num_envs: 128
+play_num_envs: 1
+seed: 42
+algo:
+  models:
+    policy:
+      initial_log_std: -0.9
+      hiddens:
+        - 128
+        - 128
+      hidden_activation:
+        - tanh
+    value:
+      hiddens:
+        - 128
+        - 128
+      hidden_activation:
+        - tanh
+  agent:
+    rollouts: 128
+    learning_epochs: 3
+    mini_batches: 2
+    learning_rate: 4.0e-05
+    learning_rate_scheduler: null
+    grad_norm_clip: 0.5
+    ratio_clip: 0.08
+    value_loss_scale: 1.0

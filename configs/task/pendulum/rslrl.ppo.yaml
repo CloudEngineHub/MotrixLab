@@ -1,0 +1,26 @@
+# @package _global_
+# Task pendulum: rslrl.ppo shared training recipe.
+defaults:
+  - /algo_base@algo: rslrl.ppo
+  - _self_
+task:
+  env: pendulum
+  rllib: rslrl
+  algo: ppo
+  train_backend: null
+num_envs: 2048
+play_num_envs: 16
+seed: 42
+algo:
+  num_steps_per_env: 32
+  max_iterations: 150
+  actor:
+    hidden_dims:
+      - 64
+      - 64
+  critic:
+    hidden_dims:
+      - 64
+      - 64
+  algorithm:
+    entropy_coef: 0.005

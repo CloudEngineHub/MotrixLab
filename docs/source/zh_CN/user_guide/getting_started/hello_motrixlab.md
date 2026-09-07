@@ -7,7 +7,7 @@
 我们提供了一个简单的脚本，用于可视化一个环境，而不执行任何训练，这可以帮助您检测系统的环境依赖是否配置正确：
 
 ```bash
-uv run scripts/view.py --env cartpole
+uv run scripts/view.py env=cartpole
 ```
 
 这将打开一个可视化窗口，显示倒立摆的物理仿真环境，使用随机动作进行演示。
@@ -17,7 +17,7 @@ uv run scripts/view.py --env cartpole
 开始训练倒立摆平衡任务：
 
 ```bash
-uv run scripts/train.py --env cartpole
+uv run scripts/train.py task=cartpole/skrl.ppo
 ```
 
 训练过程会自动：
@@ -36,7 +36,7 @@ uv run scripts/train.py --env cartpole
 如果您想要在训练过程中观察模型的学习过程，可以启用可视化渲染：
 
 ```bash
-uv run scripts/train.py --env cartpole --render
+uv run scripts/train.py task=cartpole/skrl.ppo render=true
 ```
 
 ### 🎮 交互式渲染控制
@@ -65,13 +65,13 @@ uv run tensorboard --logdir runs/cartpole
 
 ```bash
 # 自动寻找最佳策略测试（推荐）
-uv run scripts/play.py --env cartpole
+uv run scripts/play.py env=cartpole
 
-# 手动指定策略文件测试（如果需要特定版本）
-uv run scripts/play.py --env cartpole --policy runs/cartpole/YOUR_RESULT_NUMBER/best_agent.pickle
+# 手动指定带 metadata 的 run 中的 checkpoint
+uv run scripts/play.py env=cartpole policy=/path/to/run/checkpoints/policy-file
 ```
 
-> **提示**：系统会自动在 `runs/cartpole/` 目录下寻找最新、最佳的策略文件。通常情况下，使用自动发现功能即可。
+> **提示**：系统会自动在 `runs/cartpole/` 下寻找最新 run 的最佳策略。手动指定的 checkpoint 必须属于包含 `metadata.json` 和 `task_config.yaml` 的 run。
 
 ## 至此我们完成了整个示例
 
@@ -81,4 +81,4 @@ uv run scripts/play.py --env cartpole --policy runs/cartpole/YOUR_RESULT_NUMBER/
 
 -   了解 [基础框架](../tutorial/basic_frame.md)
 -   学习 [物理环境配置](../tutorial/physics_environment.md)
--   查看更多 [训练示例](../demo/cartpole.md)
+-   浏览更多 [环境](../envs/index.md)

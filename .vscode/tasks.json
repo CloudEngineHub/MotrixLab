@@ -1,0 +1,63 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Format & Lint",
+      "type": "shell",
+      "command": "prek",
+      "args": ["run", "--all-files"],
+      "options": {
+        "statusbar": {
+          "icon": {
+            "id": "coffee"
+          },
+          "color": "#F9E79F"
+        }
+      }
+    },
+    {
+      "label": "Install Docs Dependencies",
+      "type": "shell",
+      "command": "uv sync --extra docs",
+      "options": {
+        "statusbar": {
+          "icon": {
+            "id": "extensions-install-count"
+          },
+          "color": "#D6A2A8",
+          "hide": true
+        }
+      }
+    },
+    {
+      "label": "Generate Docs(zh_CN)",
+      "type": "shell",
+      "command": "uv run make -e SPHINXOPTS='-D language=zh_CN' html",
+      "options": {
+        "cwd": "${workspaceFolder}/docs",
+        "statusbar": {
+          "icon": {
+            "id": "remote-explorer-documentation"
+          },
+          "color": "#D6A2A8"
+        }
+      },
+      "dependsOn": ["Install Docs Dependencies"]
+    },
+    {
+      "label": "Generate Docs(en)",
+      "type": "shell",
+      "command": "uv run make -e SPHINXOPTS='-D language=en' html",
+      "options": {
+        "cwd": "${workspaceFolder}/docs",
+        "statusbar": {
+          "icon": {
+            "id": "remote-explorer-documentation"
+          },
+          "color": "#D6A2A8"
+        }
+      },
+      "dependsOn": ["Install Docs Dependencies"]
+    }
+  ]
+}

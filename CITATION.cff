@@ -1,9 +1,11 @@
 cff-version: 1.2.0
-message: "If you use MotrixLab in your research, please cite it as below."
-title: "MotrixLab: A Reinforcement Learning Framework for Robot Simulation"
-type: software
+title: "MotrixLab"
+version: "0.3.0"
+date-released: 2026-04-02
+abstract: "A reinforcement learning framework for robot simulation, training, and deployment."
 authors:
-  - name: "Motphys Team"
-year: 2026
-url: "https://motrixlab.readthedocs.io/"
-repository-code: "GitHub - Motphys/MotrixLab: A general-purpose machine learning architecture designed for robot train"
+  - name: "Motphys Technology Co., Ltd."
+    email: "developers@motphys.com"
+repository-code: "https://github.com/Motphys/MotrixLab"
+license: "Apache-2.0"
+url: "https://motrixlab.readthedocs.io"

@@ -26,10 +26,10 @@
     ```{note}
     不同操作系统对 MotrixLab 各功能模块的支持情况如下：
 
-    | 操作系统 | CPU 仿真 | 交互式查看器 | GPU 仿真 |
-    | :------: | :------: | :----------: | :------: |
-    |  Linux   |    ✅    |      ✅      |    🛠️ 开发中    |
-    | Windows  |    ✅    |      ✅      |    🛠️ 开发中    |
+    | 操作系统 | CPU 仿真 | 交互式查看器 |
+    | :------: | :------: | :----------: |
+    |  Linux   |    ✅    |      ✅      |
+    | Windows  |    ✅    |      ✅      |
     ```
 
 ## 安装步骤
@@ -68,7 +68,7 @@ cd MotrixLab
 2. 在执行 `uv sync` 命令时添加 `--index-strategy unsafe-best-match` 参数：
 
     ```
-    uv sync --all-packages --all-extras --index-strategy unsafe-best-match
+    uv sync --all-packages --all-groups --all-extras --index-strategy unsafe-best-match
     ```
 
 :::
@@ -77,7 +77,7 @@ cd MotrixLab
 
 ```bash
 # 安装所有依赖
-uv sync --all-packages --all-extras
+uv sync --all-packages --all-groups --all-extras
 ```
 
 如果仅需特定训练框架，可选择性安装以减少依赖体积：
@@ -92,4 +92,19 @@ uv sync --all-packages --extra skrl-torch
 
 # 安装 RSLRL（仅支持 PyTorch）
 uv sync --all-packages --extra rslrl
+```
+
+## Package 边界
+
+-   `motrix-env-core` 提供环境 framework，不包含内置任务和资产。
+-   `motrix-envs` 依赖 core package，包含所有内置环境、机器人模型和任务数据。
+-   `motrix-rl` 仅依赖 core package，不强制安装内置环境。
+
+外部项目实现自定义环境时可以只安装 `motrix-env-core`；使用内置任务时安装 `motrix-envs`。导入
+`motrix_envs` 时会完成内置环境注册。
+
+```python
+from motrix_envs import registry
+from motrix_env_core.direct.env import DirectEnv
+from motrix_envs.core import EnvCfg, SceneCfg, configclass
 ```

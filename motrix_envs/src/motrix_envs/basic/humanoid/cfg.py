@@ -1,28 +1,18 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
 
 import os
-from dataclasses import dataclass, field
 
-from motrix_envs import registry
-from motrix_envs.base import EnvCfg
+from motrix_env_core import registry
+from motrix_env_core.base import SimCfg
+from motrix_env_core.config import configclass
+from motrix_env_core.config.scene import SceneCfg, SystemCameraCfg
+from motrix_env_core.direct.env import DirectEnvCfg
 
 model_file = os.path.dirname(__file__) + "/humanoid.xml"
 
 
-@dataclass
+@configclass
 class InitStateConfig:
     reset_height_factor: float = 0.95
     reset_qvel_range: float = 0.01
@@ -30,27 +20,23 @@ class InitStateConfig:
     hip_yaw_range: tuple[float, float] = (-15.0, 15.0)
     hip_roll_range: tuple[float, float] = (-12.0, 12.0)
     hip_pitch_range: tuple[float, float] = (-12.0, 12.0)
-    symmetric_leg_pairs: list[tuple[int, int, tuple[float, float]]] = field(
-        default_factory=lambda: [
-            (10, 16, (-18.0, 2.0)),
-            (11, 17, (-25.0, 20.0)),
-            (12, 18, (-70.0, 5.0)),
-            (13, 19, (-45.0, -25.0)),
-            (14, 20, (-40.0, 0.0)),
-            (15, 21, (-25.0, 25.0)),
-        ]
-    )
-    symmetric_arm_pairs: list[tuple[int, int]] = field(
-        default_factory=lambda: [
-            (22, 25),
-            (23, 26),
-            (24, 27),
-        ]
-    )
+    symmetric_leg_pairs: list[tuple[int, int, tuple[float, float]]] = [
+        (10, 16, (-18.0, 2.0)),
+        (11, 17, (-25.0, 20.0)),
+        (12, 18, (-70.0, 5.0)),
+        (13, 19, (-45.0, -25.0)),
+        (14, 20, (-40.0, 0.0)),
+        (15, 21, (-25.0, 25.0)),
+    ]
+    symmetric_arm_pairs: list[tuple[int, int]] = [
+        (22, 25),
+        (23, 26),
+        (24, 27),
+    ]
     arm_margin_factor: float = 0.1
 
 
-@dataclass
+@configclass
 class TerminationConfig:
     head_height_factor: float = 0.5
     torso_upright_threshold: float = 0.2
@@ -58,27 +44,46 @@ class TerminationConfig:
 
 
 @registry.envcfg("dm-humanoid-walk")
-@dataclass
-class HumanoidWalkCfg(EnvCfg):
-    model_file: str = model_file
-    max_episode_seconds: float = 25.0
+@configclass
+class HumanoidWalkCfg(DirectEnvCfg):
+    """Control the DM Control humanoid to walk forward.
 
-    sim_dt: float = 0.01
+    zh_CN: 控制 DM Control 人形机器人向前行走。
+    """
+
+    scene: SceneCfg = SceneCfg(
+        file=model_file,
+        system_camera=SystemCameraCfg(distance=10.0, elevation=-20.0, azimuth=90.0),
+    )
+    max_episode_seconds: float = 25.0
+    render_spacing: float = 2.0
+
+    sim: SimCfg = SimCfg(dt=0.01)
     ctrl_dt: float = 0.01
     move_speed: float = 1.0
     stand_height: float = 1.4
 
-    init_state: InitStateConfig = field(default_factory=InitStateConfig)
-    termination_config: TerminationConfig = field(default_factory=TerminationConfig)
+    init_state: InitStateConfig = InitStateConfig()
+    termination_config: TerminationConfig = TerminationConfig()
 
 
 @registry.envcfg("dm-humanoid-stand")
-@dataclass
+@configclass
 class HumanoidStandCfg(HumanoidWalkCfg):
+    """Control the DM Control humanoid to remain standing.
+
+    zh_CN: 控制 DM Control 人形机器人保持站立。
+    """
+
     move_speed: float = 0.0
 
 
 @registry.envcfg("dm-humanoid-run")
-@dataclass
+@configclass
 class HumanoidRunCfg(HumanoidWalkCfg):
+    """Control the DM Control humanoid to run forward.
+
+    zh_CN: 控制 DM Control 人形机器人高速向前奔跑。
+    """
+
     move_speed: float = 10.0

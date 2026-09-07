@@ -1,33 +1,31 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
 
 import os
-from dataclasses import dataclass
 
-from motrix_envs import registry
-from motrix_envs.base import EnvCfg
+from motrix_env_core import registry
+from motrix_env_core.base import SimCfg
+from motrix_env_core.config import configclass
+from motrix_env_core.config.scene import SceneCfg, SystemCameraCfg
+from motrix_env_core.direct.env import DirectEnvCfg
 
 model_file = os.path.dirname(__file__) + "/cheetah.xml"
 
 
 @registry.envcfg("dm-cheetah")
-@dataclass
-class CheetahEnvCfg(EnvCfg):
-    model_file: str = model_file
+@configclass
+class CheetahEnvCfg(DirectEnvCfg):
+    """Drive the planar Cheetah forward as fast as possible.
+
+    zh_CN: 驱动平面 Cheetah 尽可能快速地向前奔跑。
+    """
+
+    scene: SceneCfg = SceneCfg(
+        file=model_file,
+        system_camera=SystemCameraCfg(distance=10.0, elevation=-25.0, azimuth=90.0),
+    )
     max_episode_seconds: float = 10.0
     render_spacing: float = 2.0
-    sim_dt: float = 0.01
+    sim: SimCfg = SimCfg(dt=0.01)
     ctrl_dt: float = 0.025
     run_speed: float = 10.0

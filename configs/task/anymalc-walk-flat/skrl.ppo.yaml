@@ -1,0 +1,33 @@
+# @package _global_
+# Task anymalc-walk-flat: skrl.ppo shared training recipe.
+defaults:
+  - /algo_base@algo: skrl.ppo
+  - _self_
+task:
+  env: anymalc-walk-flat
+  rllib: skrl
+  algo: ppo
+  train_backend: null
+num_envs: 1024
+play_num_envs: 16
+seed: 1
+algo:
+  models:
+    value:
+      hiddens:
+        - 512
+        - 256
+        - 128
+    policy:
+      initial_log_std: -0.6931471805599453
+      hiddens:
+        - 512
+        - 256
+        - 128
+    separate: true
+  agent:
+    mini_batches: 4
+    learning_epochs: 5
+    entropy_loss_scale: 0.001
+  trainer:
+    timesteps: 3624

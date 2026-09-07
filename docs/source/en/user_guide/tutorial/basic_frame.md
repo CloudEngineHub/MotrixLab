@@ -1,152 +1,119 @@
 # Basic Framework
 
-MotrixLab is a robot reinforcement learning platform. This section introduces MotrixLab's framework design and the relationships between various components. If you are already familiar with reinforcement learning content, you can skip directly to the next section to learn how to develop your own training environments.
+MotrixLab separates environment implementation, training methods, configuration, and command-line orchestration. This section explains how those pieces fit together before you build a custom environment or training backend.
 
-## MotrixLab's Framework Design
+## Repository Layers
 
-MotrixLab adopts a layered architecture design, clearly separating training environments from training logic:
-
-```
+```text
 MotrixLab/
-├── motrix_envs/               # Environment layer: Physics simulation and task definition
-│   ├── basic/                  # Basic environments (cartpole, walker, etc.)
-│   ├── locomotion/             # Locomotion environments (GO1 robot, etc.)
-│   ├── np/                     # NumPy simulation backend framework
-│   ├── base.py                 # Environment base class
-│   └── registry.py             # Environment registry system
-├── motrix_rl/                # Training layer: RL algorithms and configuration
-│   ├── skrl/                   # SKRL framework integration (JAX/PyTorch)
-│   ├── rslrl/                  # RSLRL framework integration (PyTorch)
-│   ├── base.py                 # RL configuration base class
-│   └── registry.py             # RL configuration registry system
-└── scripts
-    ├── train.py                # Training entry script
-    ├── play.py                 # Testing entry script
-    └── view.py                 # Visualization script
+├── motrix_envs/                 # Environment configs, implementations, and registry
+│   └── src/motrix_envs/
+├── motrix_rl/                   # RL frameworks, providers, trainers, and run artifacts
+│   └── src/motrix_rl/
+├── configs/
+│   ├── algo_base/               # Complete typed defaults for each RL provider
+│   └── task/<env>/              # Per-environment training recipes
+└── scripts/
+    ├── train.py                 # Hydra training entry point
+    ├── play.py                  # Metadata-backed policy playback
+    └── view.py                  # Random-action environment preview
 ```
 
-## Core Component Architecture
+The main runtime flow is:
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        User Interface Layer                      │
-│                    train.py │ play.py │ view.py                   │
-└─────────────────────────────────────────────────────────────────┘
-                                │
-                                ▼
-┌─────────────────────────────────────────────────────────────────┐
-│             Training Algorithm Layer (SKRL / RSLRL)             │
-│                 PPO Trainer │ Network Architecture │ Optimizer   │
-└─────────────────────────────────────────────────────────────────┘
-                                │
-                                ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      Environment Implementation Layer            │
-│   Environment Config(EnvCfg) │ Environment Impl(Env) │ Reward   │
-└─────────────────────────────────────────────────────────────────┘
-                                │
-                                ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Physics Simulation Layer (MotrixSim)          │
-│                    MJCF Model │ Physics Engine │ Collision      │
-└─────────────────────────────────────────────────────────────────┘
+```text
+task=<env>/<framework>.<algorithm>
+                 │
+                 ▼
+Hydra composes root config + algorithm base + Task + CLI overrides
+                 │
+                 ▼
+runner resolves an AgentProvider and creates a Trainer
+                 │
+                 ▼
+Trainer creates the registered environment and executes train/play
+                 │
+                 ▼
+runs/... stores metadata, resolved Task config, and checkpoints
 ```
 
-## Detailed Core Components
+## Core Components
 
-### 1. Training Environment
+### Environment Layer
 
-**Location**: Environment Implementation Layer
+An environment normally consists of:
 
-The training environment is the core component of MotrixLab, containing three key parts:
+-   An `EnvCfg` dataclass registered with `@registry.envcfg("name")`.
+-   An environment implementation registered with `@registry.env("name")`.
+-   Task logic for observations, rewards, termination, reset, and action application.
 
--   **Environment Configuration (EnvCfg)**: Defines physics simulation parameters (model files, time steps, episode length, etc.) and task-specific parameters
--   **Environment Implementation (Env)**: Inherits from base environment class, implements specific task logic, physics simulation interaction, and termination condition checking
--   **Reward Function (Reward)**: Implemented in the environment's step method, calculates reward values based on current state and actions
+The environment registry owns environment names and simulation-backend implementations. `scripts/view.py`, trainers, and playback all create environments through this same registry.
 
-Environments are registered to the system through decorators.
+### RL Framework and Provider Layer
 
-### 2. Reward Function
+`RlFramework` defines an RL framework namespace such as `skrl`, `rslrl`, or `motrix`. Each framework contains one or more `AgentProvider` implementations. A provider declares:
 
-**Location**: Configuration Management Layer + Environment Implementation Layer
+-   Its algorithm name, such as `ppo` or `fastsac`.
+-   Its training backend, such as `jax` or `torch`.
+-   The typed algorithm configuration schema it accepts.
+-   Its checkpoint format and how to create a trainer.
 
-The reward function in MotrixLab adopts a dual-structure design:
+Frameworks and providers are registered in Python because they represent executable capabilities. See [Adding a Custom Training Backend](custom_training_backend.md) for the extension interface.
 
--   **Configuration Level**: Define reward weights, reward component types, and scaling parameters in configuration classes
--   **Implementation Level**: Calculate specific reward values in the environment's `_compute_reward` method based on configuration parameters
+### Hydra Configuration Layer
 
-This design allows reward functions to be flexibly adjusted through configuration files while implementing complex computational logic in code.
+Training values live in YAML rather than Python Task subclasses:
 
-### 3. Configuration Parameters
+-   `configs/algo_base/<framework>.<algorithm>.yaml` supplies the complete provider-owned algorithm defaults.
+-   `configs/task/<env>/<framework>.<algorithm>.yaml` selects an environment and stores task-specific tuning.
+-   An optional `.<backend>.yaml` Task contains only backend-specific differences.
+-   CLI `key=value` arguments apply temporary overrides after composition.
 
-**Location**: Configuration Management Layer
+The provider's dataclass schema validates field names and types, while YAML remains the source of truth for values. Task files are discovered by scanning `configs/task/`; there is no RL configuration decorator or Python Task registry.
 
-Configuration parameters adopt a hierarchical management structure:
+### Runner and Trainer Layer
 
--   **Environment Configuration (EnvCfg)**: Controls physics simulation and task behavior, including simulation parameters, reset noise, time limits, etc.
--   **Training Configuration (RLCfg)**: Controls reinforcement learning algorithms, including network structure, learning rate, batch size, training steps, etc.
+The shared runner handles framework-neutral orchestration:
 
-Configuration classes support inheritance, parameter validation, and runtime overriding, ensuring parameter reasonableness and flexibility.
+1. Read `task.env`, `task.rllib`, `task.algo`, and `task.train_backend` from the composed config.
+2. Resolve a compatible provider and training backend.
+3. Create a run directory and write `metadata.json` plus `task_config.yaml`.
+4. Build a `TrainerContext` and ask the provider to create its trainer.
+5. Execute training or playback and register checkpoint artifacts.
 
-### 4. Registry System
+The trainer owns framework-specific model construction, optimization, checkpoint serialization, and inference. It should use the environment registry instead of coupling itself to a concrete environment class.
 
-**Location**: Hub connecting various components
+## Training Workflow
 
-The registry system implements automatic component registration through the decorator pattern:
+For example:
 
--   Environment configuration classes are registered through `@registry.envcfg()`
--   Environment implementation classes are registered through `@registry.env()`, supporting multiple backends
--   RL configuration classes are registered through `@registry.rlcfg()`
-
-The registry system achieves component decoupling, making it simple and fast to add new environments or modify configurations.
-
-## Data Flow and Workflow
-
-### Training Process Overview
-
-```
-User Command → Configuration Parsing → Environment Creation → Training Loop → Model Save
-   ↓
-train.py --env cartpole
-   ↓
-Find Configuration Classes → Create Environment → Start PPO Training → Save Model
+```bash
+uv run scripts/train.py task=cartpole/skrl.ppo num_envs=1024
 ```
 
-### Core Workflow
+This command performs the following steps:
 
-1. **Environment Definition**: Create environment configuration classes and implementation classes in `src/motrix_envs/`
-2. **Automatic Registration**: Register components to the system through decorators
-3. **Configuration Loading**: When starting from command line, the system automatically finds and loads corresponding configurations
-4. **Environment Creation**: Factory pattern creates environment instances, supporting parameter override
-5. **Training Execution**: PPO algorithm interacts with the environment, collects data and updates policy
-6. **Result Saving**: Periodically save checkpoints and final models
-
-### Role of Configuration Parameters
-
-Configuration parameters play a key connecting role throughout the process:
-
--   **Environment Configuration** determines physics simulation behavior (time steps, model files, noise, etc.)
--   **Reward Configuration** affects learning signals (reward weights, calculation methods, etc.)
--   **Training Configuration** controls algorithm behavior (network structure, learning rate, batch size, etc.)
+1. Hydra composes `configs/train.yaml`, `configs/algo_base/skrl.ppo.yaml`, and `configs/task/cartpole/skrl.ppo.yaml`.
+2. `num_envs=1024` overrides the composed Task value for this run only.
+3. The runner resolves the SKRL PPO provider and an available JAX or Torch backend.
+4. The trainer creates the registered `cartpole` environment and starts optimization.
+5. Run metadata, the resolved Task snapshot, logs, and checkpoint manifests are written under `runs/cartpole/`.
 
 ## Multi-Framework Support
 
-MotrixLab's layered design naturally supports multiple RL frameworks:
+The same environment can have multiple Task recipes without changing its implementation:
 
--   **Simulation Backends**: MotrixSim (CPU)
--   **Training Frameworks**:
-    -   **SKRL**: Supports JAX and PyTorch backends with GPU acceleration
-    -   **RSLRL**: Supports PyTorch backend with GPU acceleration
--   **Framework Selection**: Use `--rllib` parameter to choose between `skrl` (default) and `rslrl`
+```bash
+uv run scripts/train.py task=cartpole/skrl.ppo
+uv run scripts/train.py task=cartpole/rslrl.ppo
+```
 
-## Design Advantages
+SKRL supports JAX and Torch providers, RSLRL uses Torch, and `motrix.fastsac` selects its synchronous or asynchronous Torch trainer through `algo.asynchronous`. The selected Task and provider determine the algorithm configuration and output metadata.
 
-This architecture design brings the following core advantages:
+## Why This Separation Matters
 
-1. **Module Decoupling**: Environment development and training logic are completely separated
-2. **Flexible Configuration**: Supports hierarchical configuration and runtime parameter override
-3. **Strong Extensibility**: Easily add new components through the registry system
-4. **Multi-Backend Compatibility**: Same environment can use different simulation and training backends
-5. **Experiment-Friendly**: Configurations can be saved and compared, ensuring experimental reproducibility
-
-Through this framework design, MotrixLab provides a clear, flexible, and easy-to-use development platform for robot reinforcement learning.
+1. **Environment reuse**: one registered environment can be trained by multiple RL frameworks.
+2. **Typed configuration**: provider schemas reject misspelled or incompatible YAML/CLI values before training.
+3. **Reproducibility**: each run stores the resolved Task configuration and provider identity.
+4. **Extensibility**: new environments add registry entries and Task YAML; new RL integrations add providers and trainers.
+5. **Consistent artifacts**: playback and resume use metadata and checkpoint manifests instead of guessing file names.

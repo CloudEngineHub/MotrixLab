@@ -1,0 +1,16 @@
+# @package _global_
+# Task franka-lift-cube: skrl.ppo, train_backend=torch delta.
+defaults:
+  - /task/franka-lift-cube/skrl.ppo@_global_
+  - _self_
+task:
+  train_backend: torch
+algo:
+  agent:
+    learning_epochs: 8
+    mini_batches: 4
+    learning_rate: 0.0003
+    learning_rate_scheduler_kwargs:
+      kl_threshold: 0.01
+    entropy_loss_scale: 0.001
+    rewards_shaper_scale: 0.01

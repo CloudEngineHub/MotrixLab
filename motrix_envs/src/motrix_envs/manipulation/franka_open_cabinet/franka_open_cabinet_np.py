@@ -1,35 +1,66 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
 
 import gymnasium as gym
-import motrixsim as mtx
 import numpy as np
 
-from motrix_envs import registry
-from motrix_envs.math import quaternion
-from motrix_envs.np.env import NpEnv, NpEnvState
+from motrix_env_core import registry
+from motrix_env_core.array.env import ArrayEnvState, NpObs
+from motrix_env_core.direct.env import DirectEnv
+from motrix_env_core.math import quaternion
+from motrix_env_core.sim import (
+    BodyJointPositionQuery,
+    BodyJointPositionWrite,
+    BodyJointVelocityQuery,
+    GeomPositionQuery,
+    JointPositionQuery,
+    JointPositionWrite,
+    JointVelocityQuery,
+    SitePositionQuery,
+    SiteQuaternionQuery,
+)
+from motrix_env_core.sim.write import BodyJointVelocityWrite, CtrlTargetsWrite, JointVelocityWrite
 
 from .cfg import FrankaOpenCabinetEnvCfg
 
+_SIM_DATA_QUERIES = {
+    "robot_joint_pos": BodyJointPositionQuery(body="link0"),
+    "robot_joint_vel": BodyJointVelocityQuery(body="link0"),
+    "drawer_pos": JointPositionQuery(joints=("drawer_top_joint",)),
+    "drawer_vel": JointVelocityQuery(joints=("drawer_top_joint",)),
+    "gripper_pos": SitePositionQuery(site="gripper"),
+    "gripper_quat": SiteQuaternionQuery(site="gripper"),
+    "handle_pos": SitePositionQuery(site="drawer_top_handle"),
+    "handle_quat": SiteQuaternionQuery(site="drawer_top_handle"),
+    "left_finger_pos": GeomPositionQuery(geom="left_finger_pad"),
+    "right_finger_pos": GeomPositionQuery(geom="right_finger_pad"),
+}
 
-@registry.env("franka-open-cabinet", "np")
-class FrankaOpenCabinetEnv(NpEnv):
+_SIM_MODEL_QUERIES = {}
+
+
+@registry.env("franka-open-cabinet")
+class FrankaOpenCabinetEnv(DirectEnv):
     _cfg: FrankaOpenCabinetEnvCfg
 
-    def __init__(self, cfg: FrankaOpenCabinetEnvCfg, num_envs: int = 1):
-        super().__init__(cfg, num_envs=num_envs)
+    def __init__(self, cfg: FrankaOpenCabinetEnvCfg, num_envs=1, backend: str | None = None):
+        super().__init__(cfg, num_envs=num_envs, backend=backend)
+        self.model = self.sim.compile_model(_SIM_MODEL_QUERIES)
+        self.sim_data = self.sim.compile_reads(_SIM_DATA_QUERIES)
+        self._ctrl_writes = self.sim.write_compiler.compile({"ctrl": CtrlTargetsWrite()})
+        self._reset_program = self.sim.write_compiler.compile(
+            {
+                "robot_position": BodyJointPositionWrite("link0"),
+                "robot_velocity": BodyJointVelocityWrite("link0"),
+                "cabinet_position": JointPositionWrite(
+                    ("door_right_joint", "door_left_joint", "drawer_top_joint", "drawer_bottom_joint")
+                ),
+                "cabinet_velocity": JointVelocityWrite(
+                    ("door_right_joint", "door_left_joint", "drawer_top_joint", "drawer_bottom_joint")
+                ),
+            },
+            reset=True,
+        )
         self.robot_joint_names = [
             "joint1",
             "joint2",
@@ -66,15 +97,12 @@ class FrankaOpenCabinetEnv(NpEnv):
         self._init_dof_pos = self.robot_default_joint_pos
         self._init_dof_vel = np.zeros(self._num_dof_vel, dtype=np.float32)
         # Initialize properties
-        self.robot = self._model.get_body("link0")
-        self.gripper_tcp = self._model.get_site("gripper")
-        self.left_finger_pad = self._model.get_geom("left_finger_pad")
-        self.right_finger_pad = self._model.get_geom("right_finger_pad")
-        self.robot_joint_pos_min_limit = self._model.actuator_ctrl_limits[0]
-        self.robot_joint_pos_max_limit = self._model.actuator_ctrl_limits[1]
-
-        self.drawer_top_joint = self._model.get_joint("drawer_top_joint")
-        self.drawer_top_handle = self._model.get_site("drawer_top_handle")
+        self.robot_joint_pos_min_limit = np.asarray(
+            [spec.ctrl_range[0] for spec in self.model.actuators], dtype=np.float32
+        )
+        self.robot_joint_pos_max_limit = np.asarray(
+            [spec.ctrl_range[1] for spec in self.model.actuators], dtype=np.float32
+        )
 
         self.count = 0
         # Set print options to 2 decimal places
@@ -88,14 +116,14 @@ class FrankaOpenCabinetEnv(NpEnv):
     def action_space(self):
         return self._action_space
 
-    def apply_action(self, actions: np.ndarray, state: NpEnvState):
+    def apply_action(self, actions: np.ndarray, state: ArrayEnvState):
         assert not np.isnan(actions).any(), "actions contain nan"
 
         state.info["last_actions"] = state.info["current_actions"]
         state.info["current_actions"] = actions
 
         # no gripper
-        old_joint_pos = self.get_robot_joint_pos(state.data)[:, : self._action_dim - 1]
+        old_joint_pos = self.get_robot_joint_pos(slice(None))[:, : self._action_dim - 1]
         new_joint_pos = actions[:, : self._action_dim - 1] + old_joint_pos  # action as offset
 
         # with gripper
@@ -107,7 +135,7 @@ class FrankaOpenCabinetEnv(NpEnv):
         sampled_gripper_action = np.where(probabilities > np.random.rand(*probabilities.shape), 0, 0.04)[
             :, None
         ]  # 0 for closed, 0.04 for open
-        state.info["current_gripper_action"] = sampled_gripper_action.squeeze()
+        state.info["current_gripper_action"] = sampled_gripper_action.squeeze(-1)
 
         new_pos = np.concatenate([new_joint_pos, sampled_gripper_action], axis=-1)
 
@@ -117,20 +145,68 @@ class FrankaOpenCabinetEnv(NpEnv):
         )  # clip new pos to limit
 
         # actuator1~8 by order
-        state.data.actuator_ctrls = cliped_new_pos
+        ctrl = self._ctrl_writes.buffer("ctrl")
+        ctrl[:] = cliped_new_pos
+        self._ctrl_writes.execute()
 
         return state
 
-    def update_state(self, state: NpEnvState):
-        # compute obs
-        obs = self._compute_observation(state.data, state.info)
+    def compute_observation(self, state: ArrayEnvState):
+        """Build the full observation batch from cached simulator data.
+
+        Reads only the cache left by the last read-program execution in the
+        transition; never performs reads itself and never touches reward,
+        termination, or info.
+        """
+        rows = slice(None)
+        num_envs = self.num_envs
+
+        # dof_pos: (num_envs, 8) range: [-1 ~ 1]
+        dof_pos = self.get_robot_joint_pos(rows)  # shape: (num_envs, 8)
+        dof_pos_rel = self._get_robot_joint_pos_rel(dof_pos)[:, : self._action_dim]
+
+        dof_lower_limits = np.tile(self.robot_joint_pos_min_limit, (num_envs, 1))
+        dof_upper_limits = np.tile(self.robot_joint_pos_max_limit, (num_envs, 1))
+
+        dof_pos_scaled = 2.0 * dof_pos_rel / (dof_upper_limits - dof_lower_limits) - 1.0
+        # relative vel: (num_envs, 8) range approximately (-pi ~ pi) / 2 (divided by 2 for smaller values)
+        dof_vel = self.get_robot_joint_vel(rows)
+        dof_vel_rel = self._get_robot_joint_vel_rel(dof_vel)[:, : self._action_dim] / 2
+
+        # relative orientation: (num_envs, 1)
+        robot_grasp_pose = self._grasp_pose(rows, "gripper")
+        drawer_grasp_pose = self._grasp_pose(rows, "handle")
+        to_target = drawer_grasp_pose - robot_grasp_pose
+
+        # Cabinet joint
+        drawer_top_joint_pos = self.sim_data["drawer_pos"][rows]
+        drawer_top_joint_vel = self.sim_data["drawer_vel"][rows]
+
+        obs = np.concatenate(
+            [dof_pos_scaled, dof_vel_rel, to_target, drawer_top_joint_pos, drawer_top_joint_vel], axis=-1
+        )
+
+        assert obs.shape == (num_envs, self._obs_dim)
+        assert not np.isnan(obs).any(), "obs contain nan"
+        # Publish the computed policy observation on the state. The field
+        # name is applied via setattr so static audits can tell this
+        # sanctioned observation-stage write apart from the forbidden
+        # transition-time writes.
+        setattr(state, "obs", NpObs(policy=np.clip(obs, -5, 5)))
+        return state
+
+    def compute_transition(self, state: ArrayEnvState):
+        """Update reward and termination from the refreshed simulator cache.
+
+        Observations are built separately by :meth:`compute_observation`.
+        """
+        self.sim_data.execute()
         # compute truncated
         truncated = self._check_termination(state)
 
         # compute reward
         reward = self._compute_reward(state, truncated)
 
-        state.obs = obs
         state.reward = reward
         state.terminated = truncated
 
@@ -138,8 +214,9 @@ class FrankaOpenCabinetEnv(NpEnv):
 
         return state
 
-    def reset(self, data: mtx.SceneData):
-        num_reset = data.shape[0]
+    def reset(self, env_ids):
+        num_reset = len(env_ids)
+        row_ids = np.asarray(env_ids, dtype=np.int64)
 
         noise_pos = np.random.uniform(
             -0.125,  # -cfg.reset_noise_scale,
@@ -148,10 +225,12 @@ class FrankaOpenCabinetEnv(NpEnv):
         )
 
         dof_pos = np.tile(self._init_dof_pos, (num_reset, 1)) + noise_pos  # Add noise in range [-0.125, 0.125]
-        data.reset(self._model)
-        data.set_dof_vel(np.zeros((num_reset, 13), dtype=np.float32))  # Includes robot and cabinet
-        data.set_dof_pos(np.concatenate([dof_pos, np.zeros((num_reset, 4), dtype=np.float32)], axis=-1), self._model)
-        self._model.forward_kinematic(data)
+        self._reset_program.buffer("robot_position")[row_ids] = np.asarray(dof_pos, dtype=np.float32)
+        self._reset_program.buffer("robot_velocity")[row_ids] = 0.0
+        self._reset_program.buffer("cabinet_position")[row_ids] = 0.0
+        self._reset_program.buffer("cabinet_velocity")[row_ids] = 0.0
+        self._reset_program.execute(row_ids)
+        self.sim_data.execute(row_ids)
 
         info = {
             "current_actions": np.zeros((num_reset, self._action_dim), dtype=np.float32),
@@ -159,44 +238,11 @@ class FrankaOpenCabinetEnv(NpEnv):
             "phase2_mask": np.zeros(num_reset, dtype=bool),  # 1D array
             "current_gripper_action": np.zeros(num_reset, dtype=np.float32),  # 1D array
         }
-        obs = self._compute_observation(data, info)
-        return obs, info
+        return info
 
-    def _compute_observation(self, data: mtx.SceneData, info: dict):
-        num_envs = data.shape[0]
-
-        # dof_pos: (num_envs, 8) range: [-1 ~ 1]
-        dof_pos = self.get_robot_joint_pos(data)  # shape: (num_envs, 8)
-        dof_pos_rel = self._get_robot_joint_pos_rel(dof_pos)[:, : self._action_dim]
-
-        dof_lower_limits = np.tile(self.robot_joint_pos_min_limit, (num_envs, 1))
-        dof_upper_limits = np.tile(self.robot_joint_pos_max_limit, (num_envs, 1))
-
-        dof_pos_scaled = 2.0 * dof_pos_rel / (dof_upper_limits - dof_lower_limits) - 1.0
-        # relative vel: (num_envs, 8) range approximately (-pi ~ pi) / 2 (divided by 2 for smaller values)
-        dof_vel = self.get_robot_joint_vel(data)
-        dof_vel_rel = self._get_robot_joint_vel_rel(dof_vel)[:, : self._action_dim] / 2
-
-        # relative orientation: (num_envs, 1)
-        robot_grasp_pose = self.gripper_tcp.get_pose(data)
-        drawer_grasp_pose = self.drawer_top_handle.get_pose(data)
-        to_target = drawer_grasp_pose - robot_grasp_pose
-
-        # Cabinet joint
-        drawer_top_joint_pos = self.drawer_top_joint.get_dof_pos(data)  # shape: (num_envs, 1)
-        drawer_top_joint_vel = self.drawer_top_joint.get_dof_vel(data)  # shape: (num_envs, 1)
-
-        obs = np.concatenate(
-            [dof_pos_scaled, dof_vel_rel, to_target, drawer_top_joint_pos, drawer_top_joint_vel], axis=-1
-        )
-
-        assert obs.shape == (num_envs, self._obs_dim)
-        assert not np.isnan(obs).any(), "obs contain nan"
-        return np.clip(obs, -5, 5)
-
-    def _compute_reward(self, state: NpEnvState, truncated: np.ndarray):
-        robot_grasp_pose = self.gripper_tcp.get_pose(state.data)
-        drawer_grasp_pose = self.drawer_top_handle.get_pose(state.data)
+    def _compute_reward(self, state: ArrayEnvState, truncated: np.ndarray):
+        robot_grasp_pose = self._grasp_pose(slice(None), "gripper")
+        drawer_grasp_pose = self._grasp_pose(slice(None), "handle")
 
         gripper_drawer_dist = np.linalg.norm(drawer_grasp_pose[:, :3] - robot_grasp_pose[:, :3], axis=-1)
 
@@ -217,7 +263,7 @@ class FrankaOpenCabinetEnv(NpEnv):
         )  # dist_reward * 0 or 0.04
 
         ## open drawer reward
-        open_dist = self.drawer_top_joint.get_dof_pos(state.data).squeeze()
+        open_dist = self.sim_data["drawer_pos"][:, 0]
         open_dist = np.clip(open_dist, 0, 1)
         open_reward = (np.exp(open_dist) - 1) * 20
 
@@ -233,11 +279,11 @@ class FrankaOpenCabinetEnv(NpEnv):
         ## Action penalty
         ## Joint velocity penalty - sometimes some joints rotate more while others rotate less
         action_penalty = np.sum(np.square(state.info["current_actions"] - state.info["last_actions"]), axis=-1)
-        joint_vel_penalty = np.sum(np.square(state.data.dof_vel[:, : self._action_dim]), axis=-1)
+        joint_vel_penalty = np.sum(np.square(self.sim_data["robot_joint_vel"][:, : self._action_dim]), axis=-1)
 
         ## finger position penalty
-        lfinger_dist = self.left_finger_pad.get_pose(state.data)[:, 2] - drawer_grasp_pose[:, 2]
-        rfinger_dist = drawer_grasp_pose[:, 2] - self.right_finger_pad.get_pose(state.data)[:, 2]
+        lfinger_dist = self.sim_data["left_finger_pos"][:, 2] - drawer_grasp_pose[:, 2]
+        rfinger_dist = drawer_grasp_pose[:, 2] - self.sim_data["right_finger_pos"][:, 2]
         finger_dist_penalty = np.zeros_like(lfinger_dist)
         finger_dist_penalty += np.where(lfinger_dist < 0, lfinger_dist, np.zeros_like(lfinger_dist))
         finger_dist_penalty += np.where(rfinger_dist < 0, rfinger_dist, np.zeros_like(rfinger_dist))
@@ -264,22 +310,25 @@ class FrankaOpenCabinetEnv(NpEnv):
 
         return reward
 
-    def _check_termination(self, state: NpEnvState):
+    def _check_termination(self, state: ArrayEnvState):
         # Check if robot arm extends too far forward causing collision
-        robot_grasp_pos_x = self.gripper_tcp.get_pose(state.data)[:, 0]
-        drawer_grasp_pos_x = self.drawer_top_handle.get_pose(state.data)[:, 0]
+        robot_grasp_pos_x = self._grasp_pose(slice(None), "gripper")[:, 0]
+        drawer_grasp_pos_x = self._grasp_pose(slice(None), "handle")[:, 0]
         truncated = robot_grasp_pos_x - drawer_grasp_pos_x < -0.03
 
         # Check that joint velocity doesn't exceed threshold of 5 rad/s
-        joint_vel = self.get_robot_joint_vel(state.data)
+        joint_vel = self.get_robot_joint_vel(slice(None))
         truncated = np.logical_or(truncated, np.abs(joint_vel).max(axis=-1) > 5)
         return truncated
 
-    def get_robot_joint_pos(self, data: mtx.SceneModel):
-        return self.robot.get_joint_dof_pos(data)[:, : self._num_dof_pos]
+    def _grasp_pose(self, rows, which: str):
+        return np.concatenate((self.sim_data[f"{which}_pos"][rows], self.sim_data[f"{which}_quat"][rows]), axis=-1)
 
-    def get_robot_joint_vel(self, data: mtx.SceneModel):
-        return self.robot.get_joint_dof_vel(data)[:, : self._num_dof_pos]
+    def get_robot_joint_pos(self, rows):
+        return self.sim_data["robot_joint_pos"][rows][:, : self._num_dof_pos]
+
+    def get_robot_joint_vel(self, rows):
+        return self.sim_data["robot_joint_vel"][rows][:, : self._num_dof_pos]
 
     def _get_robot_joint_pos_rel(self, dof_pos: np.ndarray):
         return dof_pos - self.robot_default_joint_pos

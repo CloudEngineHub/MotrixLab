@@ -1,0 +1,21 @@
+# @package _global_
+# Task dm-finger-turn-hard: skrl.ppo shared training recipe.
+defaults:
+  - /algo_base@algo: skrl.ppo
+  - _self_
+task:
+  env: dm-finger-turn-hard
+  rllib: skrl
+  algo: ppo
+  train_backend: null
+num_envs: 2048
+play_num_envs: 16
+seed: 42
+algo:
+  agent:
+    rollouts: 24
+    learning_epochs: 4
+    mini_batches: 4
+    learning_rate: 0.0002
+  trainer:
+    timesteps: 20000

@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
+
 
 # Poster generation script for videos
 # Extracts the first frame from all videos in source/_static/videos/

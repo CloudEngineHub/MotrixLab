@@ -1,49 +1,80 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
 
 import gymnasium as gym
-import motrixsim as mtx
 import numpy as np
 
-from motrix_envs import registry
-from motrix_envs.locomotion.go1.cfg import Go1WalkNpStairsEnvCfg
-from motrix_envs.math import quaternion
-from motrix_envs.np.env import NpEnv, NpEnvState
+from motrix_env_core import registry
+from motrix_env_core.array.env import ArrayEnvState
+from motrix_env_core.direct.env import DirectEnv
+from motrix_env_core.math import quaternion
+from motrix_env_core.sim import (
+    ActuatorCtrlQuery,
+    BodyAngularVelocityWrite,
+    BodyJointPositionQuery,
+    BodyJointPositionWrite,
+    BodyJointVelocityQuery,
+    BodyLinearVelocityWrite,
+    BodyPositionWrite,
+    BodyRotationWrite,
+    GeomPairCollidingQuery,
+    LinkPositionQuery,
+    LinkQuaternionQuery,
+    SensorValuesQuery,
+)
+from motrix_env_core.sim.write import BodyJointVelocityWrite, CtrlTargetsWrite
+from motrix_envs.locomotion.go1.cfg import Go1WalkDirectStairsEnvCfg
 
 from .common import generate_repeating_array
 
 
-@registry.env("go1-stairs-terrain-walk", sim_backend="np")
-class Go1WalkStairsTask(NpEnv):
-    _init_dof_pos: np.ndarray
-    _init_dof_vel: np.ndarray
+def _sim_data_queries(cfg: Go1WalkDirectStairsEnvCfg):
+    return {
+        "robot_joint_pos": BodyJointPositionQuery(body=cfg.asset.body_name),
+        "robot_joint_vel": BodyJointVelocityQuery(body=cfg.asset.body_name),
+        "actuator_ctrls": ActuatorCtrlQuery(),
+        "root_pos": LinkPositionQuery(link="trunk"),
+        "root_quat": LinkQuaternionQuery(link="trunk"),
+        "local_linvel": SensorValuesQuery(sensors=("local_linvel",)),
+        "gyro": SensorValuesQuery(sensors=("gyro",)),
+        "foot_contact_forces": SensorValuesQuery(
+            sensors=("FR_foot_contact", "FL_foot_contact", "RR_foot_contact", "RL_foot_contact")
+        ),
+        "termination_colliding": GeomPairCollidingQuery(pairs=(("trunk", "floor"),)),
+        "foot_colliding": GeomPairCollidingQuery(
+            pairs=(("FR_foot", "floor"), ("FL_foot", "floor"), ("RR_foot", "floor"), ("RL_foot", "floor"))
+        ),
+    }
 
-    def __init__(self, cfg: Go1WalkNpStairsEnvCfg, num_envs=1):
-        super().__init__(cfg, num_envs)
+
+@registry.env("go1-stairs-terrain-walk")
+class Go1WalkStairsTask(DirectEnv):
+    def __init__(self, cfg: Go1WalkDirectStairsEnvCfg, num_envs=1, backend: str | None = None):
+        super().__init__(cfg, num_envs, backend=backend)
+        self.model = self.sim.compile_model({})
+        self.sim_data = self.sim.compile_reads(_sim_data_queries(cfg))
+        self._ctrl_writes = self.sim.write_compiler.compile({"ctrl": CtrlTargetsWrite()})
+        self._reset_program = self.sim.write_compiler.compile(
+            {
+                "base_position": BodyPositionWrite((cfg.asset.body_name,)),
+                "base_rotation": BodyRotationWrite((cfg.asset.body_name,)),
+                "base_linear_velocity": BodyLinearVelocityWrite((cfg.asset.body_name,)),
+                "base_angular_velocity": BodyAngularVelocityWrite((cfg.asset.body_name,)),
+                "joints_position": BodyJointPositionWrite(cfg.asset.body_name),
+                "joints_velocity": BodyJointVelocityWrite(cfg.asset.body_name),
+            },
+            reset=True,
+        )
+        self._reset_position = self._reset_program.buffer("base_position")[:, 0]
+        self._reset_rotation = self._reset_program.buffer("base_rotation")[:, 0]
+        self._reset_linear_velocity = self._reset_program.buffer("base_linear_velocity")[:, 0]
+        self._reset_angular_velocity = self._reset_program.buffer("base_angular_velocity")[:, 0]
+        self._reset_joint_position = self._reset_program.buffer("joints_position")
+        self._reset_joint_velocity = self._reset_program.buffer("joints_velocity")
         self._init_action_space()
         self._init_obs_space()
-        self._body = self._model.get_body(self.cfg.asset.body_name)
         self._num_action = self._action_space.shape[0]
         self._num_observation = self._observation_space.shape[0]
-        self._num_dof_pos = self._model.num_dof_pos
-        self._num_dof_vel = self._model.num_dof_vel
-
-        self._init_dof_vel = np.zeros(
-            (self._num_dof_vel,),
-            dtype=np.float32,
-        )
         height_list = np.array([-1, 0.5, 1.5])
         offset_h = [[2, 0, 2, 1, 1], [2, 2, 1, 0, 0], [1, 1, 2, 1, 2], [0, 1, 0, 2, 0], [0, 1, 1, 0, 2]]
         offset = []
@@ -52,16 +83,15 @@ class Go1WalkStairsTask(NpEnv):
                 h_index = offset_h[j][i]
                 offset.append([(i - 2) * 8.0, (j - 2) * 8.0, height_list[h_index]])
         self.offset_list = np.array(offset)
-        self._init_dof_pos = self._model.compute_init_dof_pos()
+        self._init_base_pose = self.model.init_dof_pos[:7].copy()
         self._init_buffer()
         self.period_counter = 0
 
     def _init_obs_space(self):
-        model = self.model
-        num_dof_vel = model.num_dof_vel  # linvel + gyro + joint_vel
-        num_joint_angle = model.num_dof_pos - 7
+        num_dof_vel = self.num_dof_vel  # linvel + gyro + joint_vel
+        num_joint_angle = self.num_dof_pos - 7
         num_gravity = 3
-        num_actions = model.num_actuators
+        num_actions = self.num_actuators
         num_command = 3
         num_contact_force = 12
 
@@ -71,11 +101,12 @@ class Go1WalkStairsTask(NpEnv):
         self._observation_space = gym.spaces.Box(-np.inf, np.inf, (num_obs,), dtype=np.float32)
 
     def _init_action_space(self):
-        model = self.model
+        lows = np.asarray([spec.ctrl_range[0] for spec in self.model.actuators], dtype=np.float32)
+        highs = np.asarray([spec.ctrl_range[1] for spec in self.model.actuators], dtype=np.float32)
         self._action_space = gym.spaces.Box(
-            np.array(model.actuator_ctrl_limits[0, :]),
-            np.array(model.actuator_ctrl_limits[1, :]),
-            (model.num_actuators,),
+            lows,
+            highs,
+            (self.num_actuators,),
             dtype=np.float32,
         )
 
@@ -87,18 +118,18 @@ class Go1WalkStairsTask(NpEnv):
     def observation_space(self) -> gym.spaces.Box:
         return self._observation_space
 
-    def get_dof_pos(self, data: mtx.SceneModel):
-        return self._body.get_joint_dof_pos(data)
+    def get_dof_pos(self):
+        return self.sim_data["robot_joint_pos"]
 
-    def get_dof_vel(self, data: mtx.SceneModel):
-        return self._body.get_joint_dof_vel(data)
+    def get_dof_vel(self):
+        return self.sim_data["robot_joint_vel"]
 
     def _init_buffer(self):
         cfg = self._cfg
-        assert isinstance(cfg, Go1WalkNpStairsEnvCfg)
+        assert isinstance(cfg, Go1WalkDirectStairsEnvCfg)
         # init buffers
 
-        self.reset_buf = np.ones(self._num_envs, dtype=np.bool)
+        self.reset_buf = np.ones(self._num_envs, dtype=np.bool_)
         self.kps = np.ones(self._num_action, dtype=np.float32) * cfg.control_config.stiffness
         self.kds = np.ones(self._num_action, dtype=np.float32) * cfg.control_config.damping
         self.gravity_vec = np.array([0, 0, -1], dtype=np.float32)
@@ -116,59 +147,23 @@ class Go1WalkStairsTask(NpEnv):
         self.default_angles = np.zeros(self._num_action, dtype=np.float32)
         self.hip_indices = []
         self.calf_indices = []
-        for i in range(self._model.num_actuators):
+        actuator_names = [spec.name for spec in self.model.actuators]
+        for i in range(self.num_actuators):
             for name in cfg.init_state.default_joint_angles.keys():
-                if name in self._model.actuator_names[i]:
+                if name in actuator_names[i]:
                     self.default_angles[i] = cfg.init_state.default_joint_angles[name]
-            if "hip" in self._model.actuator_names[i]:
+            if "hip" in actuator_names[i]:
                 self.hip_indices.append(i)
-            if "calf" in self._model.actuator_names[i]:
+            if "calf" in actuator_names[i]:
                 self.calf_indices.append(i)
 
-        self._init_dof_pos[-self._num_action :] = self.default_angles
+        self._init_joint_position = self.default_angles.copy()
 
-        self.ground = []
-        for geom_name in self._model.geom_names:
-            if geom_name is not None and cfg.asset.ground_name in geom_name:
-                self.ground.append(self._model.get_geom_index(geom_name))
-        self.termination_contact = None
-        self.foot = []
-        for gournd_index in self.ground:
-            for name in cfg.asset.terminate_after_contacts_on:
-                if self.termination_contact is None:
-                    self.termination_contact = np.array(
-                        [[self._model.get_geom_index(name), gournd_index]], dtype=np.uint32
-                    )
-                else:
-                    self.termination_contact = np.append(
-                        self.termination_contact,
-                        np.array(
-                            [[self._model.get_geom_index(name), gournd_index]],
-                            dtype=np.uint32,
-                        ),
-                        axis=0,
-                    )
-        self.num_check = self.termination_contact.shape[0]
-
-        self.foot = None
-        for gournd_index in self.ground:
-            for i in self._model.geom_names:
-                if i is not None and cfg.asset.foot_name in i:
-                    if self.foot is None:
-                        self.foot = np.array([[self._model.get_geom_index(i), gournd_index]], dtype=np.uint32)
-                    else:
-                        self.foot = np.append(
-                            self.foot,
-                            np.array(
-                                [[self._model.get_geom_index(i), gournd_index]],
-                                dtype=np.uint32,
-                            ),
-                            axis=0,
-                        )
-        self.foot_check_num = self.foot.shape[0]
-        self.foot_check = self.foot
-
-        self.termination_check = self.termination_contact
+        # Contact-pair counts follow the cfg-pinned collision queries: the
+        # legacy code derived them by substring-matching the scene's single
+        # "floor" ground geom against the trunk and the four foot geoms.
+        self.num_check = self.sim_data["termination_colliding"].shape[-1]
+        self.foot_check_num = self.sim_data["foot_colliding"].shape[-1]
 
         spacing = 2.0
         cols = int(np.ceil(np.sqrt(self._num_envs)))
@@ -183,47 +178,44 @@ class Go1WalkStairsTask(NpEnv):
         self.offsets = np.array(offsets)
 
     def apply_action(self, actions, state):
-        state.info["last_dof_vel"] = self.get_dof_vel(state.data)
+        # Copy: the inputs slice is a view over the shared read buffer, which
+        # the upcoming physics-step read overwrites in place.
+        state.info["last_dof_vel"] = self.get_dof_vel().copy()
         state.info["last_actions"] = state.info["current_actions"]
         state.info["current_actions"] = actions
-        state.data.actuator_ctrls = self._compute_torques(actions, state.data)
+        ctrl = self._ctrl_writes.buffer("ctrl")
+        ctrl[:] = np.asarray(self._compute_torques(actions), dtype=np.float32)
+        self._ctrl_writes.execute()
         return state
 
-    def _compute_torques(self, actions, data):
+    def _compute_torques(self, actions):
         # Compute torques from actions.
         # pd controller
         actions_scaled = actions * self.cfg.control_config.action_scale
-        torques = self.kps * (
-            actions_scaled + self.default_angles - self.get_dof_pos(data)
-        ) - self.kds * self.get_dof_vel(data)
+        torques = self.kps * (actions_scaled + self.default_angles - self.get_dof_pos()) - self.kds * self.get_dof_vel()
         return torques
 
-    def get_local_linvel(self, data: mtx.SceneData) -> np.ndarray:
-        return self._model.get_sensor_value(self.cfg.sensor.local_linvel, data)
+    def get_local_linvel(self) -> np.ndarray:
+        return self.sim_data["local_linvel"]
 
-    def get_gyro(self, data: mtx.SceneData) -> np.ndarray:
-        return self._model.get_sensor_value(self.cfg.sensor.gyro, data)
+    def get_gyro(self) -> np.ndarray:
+        return self.sim_data["gyro"]
 
-    def update_state(self, state):
-        state = self.update_observation(state)
-        state = self.update_terminated(state)
-        state = self.update_reward(state)
-        return state
-
-    def _get_obs(self, data: mtx.SceneData, info: dict) -> np.ndarray:
-        linear_vel = self.get_local_linvel(data)
-        gyro = self.get_gyro(data)
-        pose = self._body.get_pose(data)
-        base_quat = pose[:, 3:7]
+    def compute_observation(self, state: ArrayEnvState):
+        """Build the full observation from cached sim reads and info."""
+        inputs = self.sim_data
+        linear_vel = inputs["local_linvel"]
+        gyro = inputs["gyro"]
+        base_quat = inputs["root_quat"]
         local_gravity = quaternion.rotate_inverse(base_quat, self.gravity_vec)
-        diff = self.get_dof_pos(data) - self.default_angles
+        diff = inputs["robot_joint_pos"] - self.default_angles
         noisy_linvel = linear_vel * self.cfg.normalization.lin_vel
         noisy_gyro = gyro * self.cfg.normalization.ang_vel
         noisy_joint_angle = diff * self.cfg.normalization.dof_pos
-        noisy_joint_vel = self.get_dof_vel(data) * self.cfg.normalization.dof_vel
-        command = info["commands"] * self.commands_scale
-        last_actions = info["current_actions"]
-        contact_force = info["contact_force"]
+        noisy_joint_vel = inputs["robot_joint_vel"] * self.cfg.normalization.dof_vel
+        command = state.info["commands"] * self.commands_scale
+        last_actions = state.info["current_actions"]
+        contact_force = state.info["contact_force"]
 
         obs = np.hstack(
             [
@@ -237,28 +229,23 @@ class Go1WalkStairsTask(NpEnv):
                 contact_force,
             ]
         )
-        return obs
-
-    def update_observation(self, state: NpEnvState):
-        data = state.data
-        # self.border_check(data, state.info)
-        obs = self._get_obs(data, state.info)
-        cquerys = self._model.get_contact_query(data)
-        foot_contact = cquerys.is_colliding(self.foot_check)
-        state.info["contacts"] = foot_contact.reshape((self._num_envs, self.foot_check_num))
-        state.info["feet_air_time"] = self.update_feet_air_time(state.info)
-        state.info["contact_force"] = self.update_contact_force(state)
-
         return state.replace(obs=obs)
 
-    def update_terminated(self, state: NpEnvState) -> NpEnvState:
-        data = state.data
-        cquerys = self._model.get_contact_query(data)
-        termination_check = cquerys.is_colliding(self.termination_check)
-        termination_check.reshape((self._num_envs, self.num_check))
+    def compute_transition(self, state):
+        self.sim_data.execute()
+        # Contact bookkeeping is reward state derived from the refreshed cache.
+        state.info["contacts"] = self.sim_data["foot_colliding"].astype(bool)
+        state.info["feet_air_time"] = self.update_feet_air_time(state.info)
+        state.info["contact_force"] = self.update_contact_force(state)
+        state = self.update_terminated(state)
+        state = self.update_reward(state)
+        return state
+
+    def update_terminated(self, state: ArrayEnvState) -> ArrayEnvState:
+        termination_check = self.sim_data["termination_colliding"]
         terminated = termination_check.any(axis=1)
 
-        over_speed = np.sum(np.square(self.get_local_linvel(data)[:, :2]), axis=1) > 1e8
+        over_speed = np.sum(np.square(self.get_local_linvel()[:, :2]), axis=1) > 1e8
         terminated = terminated | over_speed
         return state.replace(
             terminated=terminated,
@@ -270,13 +257,12 @@ class Go1WalkStairsTask(NpEnv):
         feet_air_time *= ~info["contacts"]
         return feet_air_time
 
-    def update_contact_force(self, state: NpEnvState):
-        data = state.data
-        pose = self._body.get_pose(data)
-        base_quat = pose[:, 3:7]
+    def update_contact_force(self, state: ArrayEnvState):
+        base_quat = self.sim_data["root_quat"]
+        foot_forces = self.sim_data["foot_contact_forces"]
         force = []
-        for foot in self.cfg.sensor.feet:
-            contact_force = self._model.get_sensor_value(foot + "_foot_contact", data)
+        for k in range(len(self.cfg.sensor.feet)):
+            contact_force = foot_forces[:, 3 * k : 3 * k + 3]
             contact_force = quaternion.rotate_inverse(base_quat, contact_force)
             force.append(contact_force)
         return np.concatenate(force, axis=1)
@@ -289,11 +275,10 @@ class Go1WalkStairsTask(NpEnv):
         )
         return commands.astype(np.float32)
 
-    def update_reward(self, state: NpEnvState) -> NpEnvState:
-        data = state.data
+    def update_reward(self, state: ArrayEnvState) -> ArrayEnvState:
         terminated = state.terminated
 
-        reward_dict = self._get_reward(data, state.info)
+        reward_dict = self._get_reward(state.info)
 
         rewards = {k: v * self.cfg.reward_config.scales[k] for k, v in reward_dict.items()}
         rwd = sum(rewards.values())
@@ -306,21 +291,25 @@ class Go1WalkStairsTask(NpEnv):
 
         return state.replace(reward=rwd)
 
-    def reset(self, data) -> tuple[np.ndarray, dict]:
-        num_reset = data.shape[0]
+    def reset(self, env_ids: np.ndarray) -> dict:
+        num_reset = len(env_ids)
 
-        dof_pos = np.tile(self._init_dof_pos, (num_reset, 1))
-        dof_vel = np.tile(self._init_dof_vel, (num_reset, 1))
+        base_pose = np.tile(self._init_base_pose, (num_reset, 1))
 
         num_period = 25
         idx = generate_repeating_array(num_period, num_reset, self.period_counter)
         self.period_counter = (self.period_counter + num_reset) % num_period
-        dof_pos[:, :3] = self.offset_list[idx]
+        base_pose[:, :3] = self.offset_list[idx]
 
-        data.reset(self._model)
-        data.set_dof_vel(dof_vel)
-        data.set_dof_pos(dof_pos, self._model)
-        self._model.forward_kinematic(data)
+        _reset_pose = base_pose.astype(np.float32)
+        self._reset_position[env_ids] = _reset_pose[:, :3]
+        self._reset_rotation[env_ids] = _reset_pose[:, 3:7]
+        self._reset_linear_velocity[env_ids] = 0.0
+        self._reset_angular_velocity[env_ids] = 0.0
+        self._reset_joint_position[env_ids] = self._init_joint_position
+        self._reset_joint_velocity[env_ids] = 0.0
+        self._reset_program.execute(env_ids)
+        self.sim_data.execute(np.asarray(env_ids, dtype=np.int64))
 
         info = {
             "current_actions": np.zeros((num_reset, self._num_action), dtype=np.float32),
@@ -328,63 +317,60 @@ class Go1WalkStairsTask(NpEnv):
             "commands": self.resample_commands(num_reset),
             "last_dof_vel": np.zeros((num_reset, self._num_action), dtype=np.float32),
             "feet_air_time": np.zeros((num_reset, self.foot_check_num), dtype=np.float32),
-            "contacts": np.zeros((num_reset, self.foot_check_num), dtype=np.bool),
+            "contacts": np.zeros((num_reset, self.foot_check_num), dtype=np.bool_),
             "contact_force": np.zeros((num_reset, 12), dtype=np.float32),
         }
-        obs = self._get_obs(data, info)
-        return obs, info
+        return info
 
     def _get_reward(
         self,
-        data: mtx.SceneData,
         info: dict,
     ) -> dict[str, np.ndarray]:
         commands = info["commands"]
         return {
-            "lin_vel_z": self._reward_lin_vel_z(data),
-            "ang_vel_xy": self._reward_ang_vel_xy(data),
-            "orientation": self._reward_orientation(data),
-            "torques": self._reward_torques(data),
-            "dof_vel": self._reward_dof_vel(data),
-            "dof_acc": self._reward_dof_acc(data, info),
+            "lin_vel_z": self._reward_lin_vel_z(),
+            "ang_vel_xy": self._reward_ang_vel_xy(),
+            "orientation": self._reward_orientation(),
+            "torques": self._reward_torques(),
+            "dof_vel": self._reward_dof_vel(),
+            "dof_acc": self._reward_dof_acc(info),
             "action_rate": self._reward_action_rate(info),
-            "tracking_lin_vel": self._reward_tracking_lin_vel(data, commands),
-            "tracking_ang_vel": self._reward_tracking_ang_vel(data, commands),
-            "stand_still": self._reward_stand_still(data, commands),
-            "hip_pos": self._reward_hip_pos(data, commands),
-            "calf_pos": self._reward_calf_pos(data, commands),
+            "tracking_lin_vel": self._reward_tracking_lin_vel(commands),
+            "tracking_ang_vel": self._reward_tracking_ang_vel(commands),
+            "stand_still": self._reward_stand_still(commands),
+            "hip_pos": self._reward_hip_pos(commands),
+            "calf_pos": self._reward_calf_pos(commands),
             "feet_air_time": self._reward_feet_air_time(commands, info),
-            "feet_stumble": self._reward_feet_stumble(data),
+            "feet_stumble": self._reward_feet_stumble(),
         }
 
     # ------------ reward functions----------------
-    def _reward_lin_vel_z(self, data):
+    def _reward_lin_vel_z(self):
         # Penalize z axis base linear velocity
-        return np.square(self.get_local_linvel(data)[:, 2])
+        return np.square(self.get_local_linvel()[:, 2])
 
-    def _reward_ang_vel_xy(self, data):
+    def _reward_ang_vel_xy(self):
         # Penalize xy axes base angular velocity
-        return np.sum(np.square(self.get_gyro(data)[:, :2]), axis=1)
+        return np.sum(np.square(self.get_gyro()[:, :2]), axis=1)
 
-    def _reward_orientation(self, data):
+    def _reward_orientation(self):
         # Penalize non flat base orientation
-        pose = self._body.get_pose(data)
-        base_quat = pose[:, 3:7]
+        base_quat = self.sim_data["root_quat"]
         gravity = quaternion.rotate_inverse(base_quat, self.gravity_vec)
         return np.sum(np.square(gravity[:, :2]), axis=1)
 
-    def _reward_torques(self, data: mtx.SceneData):
+    def _reward_torques(self):
         # Penalize torques
-        return np.sum(np.square(data.actuator_ctrls), axis=1)
+        return np.sum(np.square(self.sim_data["actuator_ctrls"]), axis=1)
 
-    def _reward_dof_vel(self, data):
+    def _reward_dof_vel(self):
         # Penalize dof velocities
-        return np.sum(np.square(self.get_dof_vel(data)), axis=1)
+        return np.sum(np.square(self.get_dof_vel()), axis=1)
 
-    def _reward_dof_acc(self, data, info):
+    def _reward_dof_acc(self, info):
         # Penalize dof accelerations
         return np.sum(
-            np.square((info["last_dof_vel"] - self.get_dof_vel(data)) / self.cfg.ctrl_dt),
+            np.square((info["last_dof_vel"] - self.get_dof_vel()) / self.cfg.ctrl_dt),
             axis=1,
         )
 
@@ -407,38 +393,39 @@ class Go1WalkStairsTask(NpEnv):
         rew_airTime *= np.linalg.norm(commands[:, :2], axis=1) > 0.1
         return rew_airTime
 
-    def _reward_tracking_lin_vel(self, data, commands: np.ndarray):
+    def _reward_tracking_lin_vel(self, commands: np.ndarray):
         # Tracking of linear velocity commands (xy axes)
-        lin_vel_error = np.sum(np.square(commands[:, :2] - self.get_local_linvel(data)[:, :2]), axis=1)
+        lin_vel_error = np.sum(np.square(commands[:, :2] - self.get_local_linvel()[:, :2]), axis=1)
         return np.exp(-lin_vel_error / self.cfg.reward_config.tracking_sigma)
 
-    def _reward_tracking_ang_vel(self, data, commands: np.ndarray):
+    def _reward_tracking_ang_vel(self, commands: np.ndarray):
         # Tracking of angular velocity commands (yaw)
-        ang_vel_error = np.square(commands[:, 2] - self.get_gyro(data)[:, 2])
+        ang_vel_error = np.square(commands[:, 2] - self.get_gyro()[:, 2])
         return np.exp(-ang_vel_error / self.cfg.reward_config.tracking_sigma)
 
-    def _reward_stand_still(self, data, commands: np.ndarray):
+    def _reward_stand_still(self, commands: np.ndarray):
         # Penalize motion at zero commands
-        return np.sum(np.abs(self.get_dof_pos(data) - self.default_angles), axis=1) * (
+        return np.sum(np.abs(self.get_dof_pos() - self.default_angles), axis=1) * (
             np.linalg.norm(commands, axis=1) < 0.1
         )
 
-    def _reward_hip_pos(self, data, commands: np.ndarray):
+    def _reward_hip_pos(self, commands: np.ndarray):
         return (0.8 - np.abs(commands[:, 1])) * np.sum(
-            np.square(self.get_dof_pos(data)[:, self.hip_indices] - self.default_angles[self.hip_indices]),
+            np.square(self.get_dof_pos()[:, self.hip_indices] - self.default_angles[self.hip_indices]),
             axis=1,
         )
 
-    def _reward_calf_pos(self, data, commands: np.ndarray):
+    def _reward_calf_pos(self, commands: np.ndarray):
         return (0.8 - np.abs(commands[:, 1])) * np.sum(
-            np.square(self.get_dof_pos(data)[:, self.calf_indices] - self.default_angles[self.calf_indices]),
+            np.square(self.get_dof_pos()[:, self.calf_indices] - self.default_angles[self.calf_indices]),
             axis=1,
         )
 
-    def _reward_feet_stumble(self, data):
+    def _reward_feet_stumble(self):
         # Penalize feet hitting vertical surfaces
+        foot_forces = self.sim_data["foot_contact_forces"]
         is_stumble = 0
-        for foot in self.cfg.sensor.feet:
-            contact_force = self._model.get_sensor_value(foot + "_foot_contact", data)
+        for k in range(len(self.cfg.sensor.feet)):
+            contact_force = foot_forces[:, 3 * k : 3 * k + 3]
             is_stumble += (np.linalg.norm(contact_force, axis=1) > 5 * np.abs(contact_force[:, 2])) * 1.0
         return is_stumble

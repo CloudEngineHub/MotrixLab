@@ -1,0 +1,41 @@
+# @package _global_
+# Task dm-lqr-2-1: skrl.ppo shared training recipe.
+defaults:
+  - /algo_base@algo: skrl.ppo
+  - _self_
+task:
+  env: dm-lqr-2-1
+  rllib: skrl
+  algo: ppo
+  train_backend: null
+num_envs: 2048
+play_num_envs: 16
+seed: 42
+algo:
+  models:
+    value:
+      hiddens:
+        - 128
+        - 128
+        - 64
+    policy:
+      hiddens:
+        - 128
+        - 128
+        - 64
+  agent:
+    rollouts: 64
+    mini_batches: 8
+    discount_factor: 0.995
+    ratio_clip: 0.12
+    learning_epochs: 8
+    grad_norm_clip: 0.5
+    learning_rate_scheduler_kwargs:
+      kl_threshold: 0.01
+    value_loss_scale: 1.0
+    value_clip: 0.1
+    lam: 0.97
+    learning_rate: 0.00015
+    entropy_loss_scale: 0.001
+  trainer:
+    timesteps: 2500

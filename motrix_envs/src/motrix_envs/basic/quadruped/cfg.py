@@ -1,35 +1,38 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
 
 import os
-from dataclasses import dataclass
 
-from motrix_envs import registry
-from motrix_envs.base import EnvCfg
+from motrix_env_core import registry
+from motrix_env_core.base import SimCfg
+from motrix_env_core.config import configclass
+from motrix_env_core.config.scene import SceneCfg, SystemCameraCfg
+from motrix_env_core.direct.env import DirectEnvCfg
 
 _DIR = os.path.dirname(__file__)
 _WALK_MODEL = os.path.join(_DIR, "quadruped_walk.xml")
 _ESCAPE_MODEL = os.path.join(_DIR, "quadruped_escape.xml")
 _FETCH_MODEL = os.path.join(_DIR, "quadruped_fetch.xml")
 
+# Leg geom names in the env's leg order (front-left, front-right, back-right,
+# back-left; thigh/shin/foot/toe per leg). Every quadruped scene defines them.
+_LEG_BODY_GEOM_NAMES = (
+    ("thigh_front_left", "shin_front_left", "foot_front_left", "toe_front_left"),
+    ("thigh_front_right", "shin_front_right", "foot_front_right", "toe_front_right"),
+    ("thigh_back_right", "shin_back_right", "foot_back_right", "toe_back_right"),
+    ("thigh_back_left", "shin_back_left", "foot_back_left", "toe_back_left"),
+)
+_LEG_GEOM_NAMES = tuple(name for leg in _LEG_BODY_GEOM_NAMES for name in leg)
 
-@dataclass
-class QuadrupedBaseCfg(EnvCfg):
-    model_file: str = _WALK_MODEL
+
+@configclass
+class QuadrupedBaseCfg(DirectEnvCfg):
+    scene: SceneCfg = SceneCfg(
+        file=_WALK_MODEL,
+        system_camera=SystemCameraCfg(distance=10.0, elevation=-25.0, azimuth=90.0),
+    )
     max_episode_seconds: float = 20.0
-    sim_dt: float = 0.01
+    sim: SimCfg = SimCfg(dt=0.01)
     ctrl_dt: float = 0.01
     render_spacing: float = 2.0
 
@@ -108,27 +111,51 @@ class QuadrupedBaseCfg(EnvCfg):
 
 
 @registry.envcfg("dm-quadruped-walk")
-@dataclass
+@configclass
 class QuadrupedWalkCfg(QuadrupedBaseCfg):
-    model_file: str = _WALK_MODEL
+    """Control the DM Control quadruped to walk forward.
+
+    zh_CN: 控制 DM Control 四足机器人向前行走。
+    """
+
+    scene: SceneCfg = SceneCfg(
+        file=_WALK_MODEL,
+        system_camera=SystemCameraCfg(distance=10.0, elevation=-25.0, azimuth=90.0),
+    )
     desired_speed: float = 0.5
     fix_heading: bool = True
     heading_reward_weight: float = 0.2
 
 
 @registry.envcfg("dm-quadruped-run")
-@dataclass
+@configclass
 class QuadrupedRunCfg(QuadrupedBaseCfg):
-    model_file: str = _WALK_MODEL
+    """Control the DM Control quadruped to run forward.
+
+    zh_CN: 控制 DM Control 四足机器人高速向前奔跑。
+    """
+
+    scene: SceneCfg = SceneCfg(
+        file=_WALK_MODEL,
+        system_camera=SystemCameraCfg(distance=10.0, elevation=-25.0, azimuth=90.0),
+    )
     desired_speed: float = 5.0
     fix_heading: bool = True
     heading_reward_weight: float = 0.2
 
 
 @registry.envcfg("dm-quadruped-escape")
-@dataclass
+@configclass
 class QuadrupedEscapeCfg(QuadrupedBaseCfg):
-    model_file: str = _ESCAPE_MODEL
+    """Control the DM Control quadruped to escape from a bowl-shaped area.
+
+    zh_CN: 控制 DM Control 四足机器人逃离碗形区域。
+    """
+
+    scene: SceneCfg = SceneCfg(
+        file=_ESCAPE_MODEL,
+        system_camera=SystemCameraCfg(distance=10.0, elevation=-25.0, azimuth=90.0),
+    )
     render_camera_name: str = "global"
     desired_speed: float = 3.0
     include_origin: bool = True
@@ -141,9 +168,17 @@ class QuadrupedEscapeCfg(QuadrupedBaseCfg):
 
 
 @registry.envcfg("dm-quadruped-fetch")
-@dataclass
+@configclass
 class QuadrupedFetchCfg(QuadrupedBaseCfg):
-    model_file: str = _FETCH_MODEL
+    """Control the DM Control quadruped to find and fetch a ball.
+
+    zh_CN: 控制 DM Control 四足机器人寻找并取回球。
+    """
+
+    scene: SceneCfg = SceneCfg(
+        file=_FETCH_MODEL,
+        system_camera=SystemCameraCfg(distance=10.0, elevation=-25.0, azimuth=90.0),
+    )
     desired_speed: float = 2.0
     include_ball: bool = True
     include_target: bool = True

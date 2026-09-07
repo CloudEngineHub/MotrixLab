@@ -1,100 +1,118 @@
 # Training Execution and Result Analysis
 
-This section introduces how to execute reinforcement learning training and how to analyze and use training results.
+This section introduces how to execute reinforcement learning training and how to analyze and use training results. For the layout of training artifacts (the `runs/` directory, `metadata.json`, checkpoints), see [Training Artifacts: the runs Directory and Checkpoint Structure](runs_and_checkpoints.md).
 
 ## Start Training
 
-### Basic Training Commands
+### Selecting a Task
+
+The training entry point uses Hydra's `task=<environment>/<framework>.<algorithm>[.<backend>]` option. A Task selects the environment, RL provider, runtime settings, and algorithm hyperparameters as one reproducible recipe:
 
 ```bash
-# Train with default parameters (SKRL framework)
-uv run scripts/train.py --env cartpole
+# Train the default Cartpole SKRL PPO Task
+uv run scripts/train.py task=cartpole/skrl.ppo
 
-# Specify RL framework
-uv run scripts/train.py --env cartpole --rllib skrl
-uv run scripts/train.py --env cartpole --rllib rslrl
-
-# Specify simulation backend
-uv run scripts/train.py --env cartpole --sim-backend np
-
-# Specify training backend (SKRL only)
-uv run scripts/train.py --env cartpole --rllib skrl --train-backend jax
-uv run scripts/train.py --env cartpole --rllib skrl --train-backend torch
+# Select another framework or algorithm
+uv run scripts/train.py task=cartpole/rslrl.ppo
+uv run scripts/train.py task=g1-walk-flat/motrix.fastsac
+uv run scripts/train.py task=g1-walk-flat/motrix.fastsac algo.asynchronous=false
 ```
 
-### Advanced Training Configuration
+Built-in RL methods and their training backends:
+
+| Task suffix      | Training backend | Description                                                 |
+| ---------------- | ---------------- | ----------------------------------------------------------- |
+| `skrl.ppo`       | `jax` / `torch`  | SKRL PPO                                                    |
+| `rslrl.ppo`      | `torch`          | RSLRL PPO                                                   |
+| `motrix.fastsac` | `torch`          | FastSAC; `algo.asynchronous` selects the execution topology |
+
+Run `uv run scripts/train.py --help` to list the Tasks available in the current checkout. See [Task Configuration and CLI Overrides](training_environment_config.md) for the Task file layout and override rules.
+
+### Selecting Training and Simulation Backends
 
 ```bash
-# Customize training parameters with SKRL
-uv run scripts/train.py --env cartpole \
-  --rllib skrl \
-  --num-envs 1024 \
-  --train-backend jax \
-  --sim-backend np
+# Override the training backend (auto-selected when task.train_backend is null)
+uv run scripts/train.py task=cartpole/skrl.ppo task.train_backend=jax
+uv run scripts/train.py task=cartpole/skrl.ppo task.train_backend=torch
 
-# Customize training parameters with RSLRL
-uv run scripts/train.py --env cartpole \
-  --rllib rslrl \
-  --num-envs 1024 \
-  --sim-backend np
-
-# Note: Parameters like learning rate need to be set through configuration files or code override
-
-# Enable rendering to monitor training process
-uv run scripts/train.py --env cartpole --render
+# Specify the simulator injected into manager-based environments
+uv run scripts/train.py task=g1-wbt-dance sim=motrixsim
 ```
 
-### Different Framework Configuration
+### Training Scale and Random Seed
 
-The system supports different RL frameworks with different configuration systems:
+```bash
+# Number of parallel environments
+uv run scripts/train.py task=cartpole/skrl.ppo num_envs=1024
 
--   **SKRL Framework**: Supports JAX and PyTorch training backends with configurable parameters per backend (via Python dataclasses)
--   **RSLRL Framework**: Supports PyTorch backend with configuration via Python dataclasses (RslrlCfg)
+# Fixed random seed (reproducible) / choose a random seed at runtime
+uv run scripts/train.py task=cartpole/skrl.ppo seed=42
+uv run scripts/train.py task=cartpole/skrl.ppo seed=null
+```
 
-For SKRL, the system supports configuring different reinforcement learning parameters for different training backends (JAX/Torch).
+```{note}
+Hydra can override typed algorithm fields directly. For example: `algo.agent.learning_rate=5e-4`. Field paths depend on the selected Task; the complete defaults are in `configs/algo_base/`.
+```
 
-### Supported Command Line Parameters
+### Auto-play and Resume
 
-| Parameter         | Description                             | Default Value |
-| ----------------- | --------------------------------------- | ------------- |
-| `--env`           | Environment name                        | `cartpole`    |
-| `--rllib`         | RL framework (skrl/rslrl)               | `skrl`        |
-| `--sim-backend`   | Simulation backend (np)                 | Auto select   |
-| `--train-backend` | Training backend (jax/torch, SKRL only) | Auto select   |
-| `--num-envs`      | Number of parallel environments         | 2048          |
-| `--render`        | Enable rendering                        | False         |
+```bash
+# After training finishes successfully, play the best policy of this run
+uv run scripts/train.py task=g1-walk-flat/motrix.fastsac play=true
 
-> **Note**: Other parameters such as learning rate, network structure, etc., need to be set through separate configuration files.
+# Resume from a run directory or a checkpoint
+uv run scripts/train.py task=g1-walk-flat/motrix.fastsac \
+  resume=/path/to/run
+
+# Enable rendering to monitor the training process
+uv run scripts/train.py task=cartpole/skrl.ppo render=true
+```
+
+### Common Hydra Overrides
+
+| Override             | Description                                                               | Default source        |
+| -------------------- | ------------------------------------------------------------------------- | --------------------- |
+| `task=...`           | Environment, framework, algorithm, backend delta                          | `cartpole/skrl.ppo`   |
+| `task.train_backend` | Training backend (`jax` / `torch`)                                        | Selected Task         |
+| `sim`                | Simulator for manager environments; leave unset for np-style environments | `null` / auto-select  |
+| `num_envs`           | Number of parallel training environments                                  | Selected Task         |
+| `seed`               | Fixed seed; `null` chooses one at runtime                                 | Selected Task         |
+| `resume`             | Run directory or checkpoint to resume from                                | `null`                |
+| `play`               | Play the best policy after training                                       | `false`               |
+| `render`             | Enable interactive rendering                                              | `false`               |
+| `algo.*`             | Provider-owned typed algorithm settings                                   | Algorithm base + Task |
+| `algo.asynchronous`  | Select synchronous or asynchronous FastSAC                                | Selected Task         |
+| `logging.*`          | Logging backend and interval                                              | Training root + Task  |
+| `checkpoint.*`       | Periodic checkpoint policy                                                | Training root + Task  |
 
 ## Training Process Monitoring
 
 ### TensorBoard Monitoring
 
-Start TensorBoard to view training progress:
-
-```bash
-uv run tensorboard --logdir runs/{env-name}
-```
-
-For example:
+TensorBoard logs are written under the run directory and can be viewed per environment:
 
 ```bash
 uv run tensorboard --logdir runs/cartpole
 ```
 
+Besides the standard return and loss curves, if an environment exposes per-term rewards via `info["Reward"]`, they are also logged to TensorBoard during training.
+
 ## Model Evaluation and Testing
 
-### Using Trained Policies
+Playback (play) does not require re-specifying the RL method — the correct `rllib / train_backend / algo` is read automatically from the run's `metadata.json`.
 
 ```bash
-# Automatically find best policy for testing (recommended)
-uv run scripts/play.py --env cartpole
+# Auto-discover and play the best policy of the latest run (recommended)
+uv run scripts/play.py env=cartpole
 
-# Manually specify policy file for testing
-uv run scripts/play.py --env cartpole --policy runs/cartpole/nn/best_agent.pickle
+# Specify a checkpoint (must be able to locate metadata.json above it)
+uv run scripts/play.py env=g1-walk-flat \
+  policy=/path/to/run/checkpoints/latest.pt
 
-# Specify number of test environments
-uv run scripts/play.py --env cartpole --num-envs 100
+# Specify the number of playback environments
+uv run scripts/play.py env=cartpole num_envs=100
 ```
 
-> **Note**: The system will automatically find the latest and best policy files in the `runs/cartpole/` directory for testing.
+```{note}
+Without `policy=...`, the system scans all `metadata.json` files under `runs/{env}/`, picks the latest run, and loads the best policy from its `checkpoints/manifest.json`. See [Training Artifacts: the runs Directory and Checkpoint Structure](runs_and_checkpoints.md) for details.
+```

@@ -1,42 +1,55 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
 
 import gymnasium as gym
-import motrixsim as mtx
 import numpy as np
 
-from motrix_envs import registry
-from motrix_envs.np.env import NpEnv, NpEnvState
+from motrix_env_core import registry
+from motrix_env_core.array.env import ArrayEnvState
+from motrix_env_core.direct.env import DirectEnv
+from motrix_env_core.sim import (
+    DofPositionQuery,
+    DofVelocityQuery,
+    JointPositionWrite,
+    LinkPositionQuery,
+)
+from motrix_env_core.sim.write import CtrlTargetsWrite, JointVelocityWrite
 
 from .cfg import PointMassEnvCfg
 
+_SIM_DATA_QUERIES = {
+    "dof_pos": DofPositionQuery(),
+    "dof_vel": DofVelocityQuery(),
+    "point_mass_pos": LinkPositionQuery(link="point_mass"),
+    "target_pos": LinkPositionQuery(link="target"),
+}
+_SIM_MODEL_QUERIES = {}
 
-@registry.env("point_mass", "np")
-class PointMassEnv(NpEnv):
+
+@registry.env("point_mass")
+class PointMassEnv(DirectEnv):
     _cfg: PointMassEnvCfg
 
-    def __init__(self, cfg: PointMassEnvCfg, num_envs: int = 1):
-        super().__init__(cfg, num_envs=num_envs)
+    def __init__(self, cfg: PointMassEnvCfg, num_envs=1, backend: str | None = None):
+        super().__init__(cfg, num_envs, backend=backend)
+        self.model = self.sim.compile_model(_SIM_MODEL_QUERIES)
+        self.sim_data = self.sim.compile_reads(_SIM_DATA_QUERIES)
+        self._ctrl_writes = self.sim.write_compiler.compile({"ctrl": CtrlTargetsWrite()})
+        self._reset_program = self.sim.write_compiler.compile(
+            {
+                "point_mass_position": JointPositionWrite(("point_mass_x", "point_mass_y")),
+                "point_mass_velocity": JointVelocityWrite(("point_mass_x", "point_mass_y")),
+                "target_position": JointPositionWrite(("target_x", "target_y")),
+                "target_velocity": JointVelocityWrite(("target_x", "target_y")),
+            },
+            reset=True,
+        )
+        self._point_position = self._reset_program.buffer("point_mass_position")
+        self._point_velocity = self._reset_program.buffer("point_mass_velocity")
+        self._target_position = self._reset_program.buffer("target_position")
+        self._target_velocity = self._reset_program.buffer("target_velocity")
         self._action_space = gym.spaces.Box(-1.0, 1.0, (2,), dtype=np.float32)
         self._observation_space = gym.spaces.Box(-np.inf, np.inf, (9,), dtype=np.float32)
-        self._num_dof_pos = self._model.num_dof_pos
-        self._num_dof_vel = self._model.num_dof_vel
-
-        self._point_mass = self._model.get_body("point_mass")
-        self._target = self._model.get_body("target")
-
         self._target_radius = cfg.target_radius
 
         # Target stay counter, used to control reset after 0.5 seconds of overlap
@@ -51,32 +64,34 @@ class PointMassEnv(NpEnv):
     def action_space(self):
         return self._action_space
 
-    def apply_action(self, actions: np.ndarray, state: NpEnvState):
+    def apply_action(self, actions: np.ndarray, state: ArrayEnvState):
         actions = np.clip(actions, -1.0, 1.0)
-        state.data.actuator_ctrls = actions
+        ctrl = self._ctrl_writes.buffer("ctrl")
+        ctrl[:] = np.asarray(actions, dtype=np.float32)
+        self._ctrl_writes.execute()
         return state
 
-    def _get_obs(self, data: mtx.SceneData) -> np.ndarray:
-        dof_pos = data.dof_pos[:, :2]  # Only x and y positions
-        dof_vel = data.dof_vel[:, :2]  # Only x and y velocities
+    def compute_observation(self, state: ArrayEnvState) -> ArrayEnvState:
+        inputs = self.sim_data
+        dof_pos = inputs["dof_pos"][:, :2]  # Only x and y positions
+        dof_vel = inputs["dof_vel"][:, :2]  # Only x and y velocities
 
         # Get target position
-        target_pos = self._target.get_pose(data)[:, :2]
+        target_pos = inputs["target_pos"][:, :2]
 
         # Calculate distance and direction to target
         delta = target_pos - dof_pos
         distance = np.linalg.norm(delta, axis=-1, keepdims=True)
 
         obs = np.concatenate([dof_pos, dof_vel, target_pos, delta, distance], axis=-1)
-        return obs
+        return state.replace(obs=obs)
 
-    def update_state(self, state: NpEnvState) -> NpEnvState:
-        data = state.data
-        obs = self._get_obs(data)
-
+    def compute_transition(self, state: ArrayEnvState) -> ArrayEnvState:
+        self.sim_data.execute()
+        inputs = self.sim_data
         # Get positions of point mass and target
-        point_pos = self._point_mass.get_pose(data)[:, :2]
-        target_pos = self._target.get_pose(data)[:, :2]
+        point_pos = inputs["point_mass_pos"][:, :2]
+        target_pos = inputs["target_pos"][:, :2]
         dist_to_target = np.linalg.norm(point_pos - target_pos, axis=-1)
 
         # Calculate effective target radius for complete overlap
@@ -99,7 +114,7 @@ class PointMassEnv(NpEnv):
         center_penalty = np.where(in_target, 10.0 * dist_to_target, 0.0)
 
         # Control penalty - increased penalty to encourage smoother movement
-        dof_vel = data.dof_vel[:, :2]
+        dof_vel = inputs["dof_vel"][:, :2]
         vel_magnitude = np.linalg.norm(dof_vel, axis=-1)
         control_penalty = 0.1 * vel_magnitude  # Increased penalty to reduce excessive movement
 
@@ -127,48 +142,38 @@ class PointMassEnv(NpEnv):
         # Check termination conditions - terminate when reaching target for 0.5 seconds or when NaN encountered
         terminated = np.zeros((self._num_envs,), dtype=bool)
         terminated = np.logical_or(in_target_long_enough, terminated)
-        terminated = np.logical_or(np.isnan(obs).any(axis=-1), terminated)
+        terminated = np.logical_or(np.isnan(inputs["dof_pos"]).any(axis=-1), terminated)
+        terminated = np.logical_or(np.isnan(rwd), terminated)
 
-        state.obs = obs
         state.reward = rwd
         state.terminated = terminated
         return state
 
-    def reset(self, data: mtx.SceneData) -> tuple[np.ndarray, dict]:
-        data.reset(self._model)
-        num_reset = data.shape[0]
-
-        # Get the actual number of DOF from the model
-        num_dof_pos = self._model.num_dof_pos
-        num_dof_vel = self._model.num_dof_vel
+    def reset(self, env_ids: np.ndarray) -> dict:
+        num_reset = len(env_ids)
 
         # Random initial position within a range for the point mass (only x, y)
         x_pos = np.random.uniform(-1.0, 1.0, size=num_reset).astype(np.float32)
         y_pos = np.random.uniform(-1.0, 1.0, size=num_reset).astype(np.float32)
 
-        # Create dof_pos with the correct length (point mass x, y and target x, y)
-        dof_pos = np.zeros((num_reset, num_dof_pos), dtype=np.float32)
-        dof_pos[:, 0] = x_pos  # point_mass_x
-        dof_pos[:, 1] = y_pos  # point_mass_y
-
-        dof_vel = np.zeros((num_reset, num_dof_vel), dtype=np.float32)
-
-        data.set_dof_vel(dof_vel)
-        data.set_dof_pos(dof_pos, self._model)
+        point_position = np.stack([x_pos, y_pos], axis=-1)
+        point_velocity = np.zeros((num_reset, 2), dtype=np.float32)
 
         # Randomize target position using its slide joints
         target_x = np.random.uniform(-1.5, 1.5, size=num_reset).astype(np.float32)
         target_y = np.random.uniform(-1.5, 1.5, size=num_reset).astype(np.float32)
 
-        # Set target position via its slide joints (indices 2 and 3)
-        dof_pos[:, 2] = target_x  # target_x
-        dof_pos[:, 3] = target_y  # target_y
-        data.set_dof_pos(dof_pos, self._model)
+        target_position = np.stack([target_x, target_y], axis=-1)
+        target_velocity = np.zeros((num_reset, 2), dtype=np.float32)
 
-        self._model.forward_kinematic(data)
+        self._point_position[env_ids] = point_position
+        self._point_velocity[env_ids] = point_velocity
+        self._target_position[env_ids] = target_position
+        self._target_velocity[env_ids] = target_velocity
+        self._reset_program.execute(env_ids)
 
         # Reset target stay counter for the environments being reset
-        self._in_target_steps[:num_reset] = 0
+        self._in_target_steps[env_ids] = 0
 
-        obs = self._get_obs(data)
-        return obs, {}
+        self.sim_data.execute(np.asarray(env_ids, np.int64))
+        return {}

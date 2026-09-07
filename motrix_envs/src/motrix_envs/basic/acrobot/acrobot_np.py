@@ -1,45 +1,52 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
 
 import gymnasium as gym
-import motrixsim as mtx
 import numpy as np
 
-from motrix_envs import registry
-from motrix_envs.np import reward
-from motrix_envs.np.env import NpEnv, NpEnvState
+from motrix_env_core import registry
+from motrix_env_core.array.env import ArrayEnvState
+from motrix_env_core.direct import reward
+from motrix_env_core.direct.env import DirectEnv
+from motrix_env_core.sim import (
+    DofPositionQuery,
+    DofVelocityQuery,
+    JointPositionWrite,
+    SitePositionQuery,
+)
+from motrix_env_core.sim.write import CtrlTargetsWrite, JointVelocityWrite
 
 from .cfg import AcrobotEnvCfg
 
+_SIM_DATA_QUERIES = {
+    "dof_pos": DofPositionQuery(),
+    "dof_vel": DofVelocityQuery(),
+    "tip_pos": SitePositionQuery(site="tip"),
+    "target_pos": SitePositionQuery(site="target"),
+}
+_SIM_MODEL_QUERIES = {}
 
-@registry.env("acrobot", "np")
-class AcrobotEnv(NpEnv):
+
+@registry.env("acrobot")
+class AcrobotEnv(DirectEnv):
     _cfg: AcrobotEnvCfg
 
-    def __init__(self, cfg: AcrobotEnvCfg, num_envs: int = 1):
-        super().__init__(cfg, num_envs=num_envs)
+    def __init__(self, cfg: AcrobotEnvCfg, num_envs=1, backend: str | None = None):
+        super().__init__(cfg, num_envs, backend=backend)
+        self.model = self.sim.compile_model(_SIM_MODEL_QUERIES)
+        self.sim_data = self.sim.compile_reads(_SIM_DATA_QUERIES)
+        self._ctrl_writes = self.sim.write_compiler.compile({"ctrl": CtrlTargetsWrite()})
+        self._reset_program = self.sim.write_compiler.compile(
+            {
+                "arm_position": JointPositionWrite(("shoulder", "elbow")),
+                "arm_velocity": JointVelocityWrite(("shoulder", "elbow")),
+            },
+            reset=True,
+        )
+        self._reset_position = self._reset_program.buffer("arm_position")
+        self._reset_velocity = self._reset_program.buffer("arm_velocity")
         self._action_space = gym.spaces.Box(-1.0, 1.0, (1,), dtype=np.float32)
         self._observation_space = gym.spaces.Box(-np.inf, np.inf, (6,), dtype=np.float32)
-        self._num_dof_pos = self._model.num_dof_pos
-        self._num_dof_vel = self._model.num_dof_vel
-
-        self._tip = self._model.get_site("tip")
-        self._target = self._model.get_site("target")
-        self._upper_arm = self._model.get_link("upper_arm")
-        self._lower_arm = self._model.get_link("lower_arm")
-
         self._target_radius = 0.2
 
         self._step_count = np.zeros(self._num_envs, dtype=np.int32)
@@ -53,13 +60,16 @@ class AcrobotEnv(NpEnv):
     def action_space(self):
         return self._action_space
 
-    def apply_action(self, actions: np.ndarray, state: NpEnvState):
+    def apply_action(self, actions: np.ndarray, state: ArrayEnvState):
         actions = np.clip(actions, -1.0, 1.0)
-        state.data.actuator_ctrls = actions
+        ctrl = self._ctrl_writes.buffer("ctrl")
+        ctrl[:] = np.asarray(actions, dtype=np.float32)
+        self._ctrl_writes.execute()
         return state
 
-    def _get_obs(self, data: mtx.SceneData) -> np.ndarray:
-        dof_pos = data.dof_pos
+    def compute_observation(self, state: ArrayEnvState) -> ArrayEnvState:
+        dof_pos = self.sim_data["dof_pos"]
+        dof_vel = self.sim_data["dof_vel"]
         shoulder_angle = dof_pos[:, 0]
         elbow_angle = dof_pos[:, 1]
 
@@ -69,8 +79,6 @@ class AcrobotEnv(NpEnv):
         total_angle = shoulder_angle + elbow_angle
         lower_arm_horizontal = np.cos(total_angle)
         lower_arm_vertical = np.sin(total_angle)
-
-        dof_vel = data.dof_vel
 
         obs = np.concatenate(
             [
@@ -82,16 +90,16 @@ class AcrobotEnv(NpEnv):
             ],
             axis=-1,
         )
+        return state.replace(obs=obs)
 
-        return obs
-
-    def update_state(self, state: NpEnvState) -> NpEnvState:
-        data = state.data
-        obs = self._get_obs(data)
-
-        tip_pos = self._tip.get_pose(data)
-        target_pos = self._target.get_pose(data)
-        dist_to_target = np.linalg.norm(tip_pos[:, :3] - target_pos[:, :3], axis=-1)
+    def compute_transition(self, state: ArrayEnvState) -> ArrayEnvState:
+        self.sim_data.execute()
+        inputs = self.sim_data
+        dof_pos = inputs["dof_pos"]
+        dof_vel = inputs["dof_vel"]
+        tip_pos = inputs["tip_pos"]
+        target_pos = inputs["target_pos"]
+        dist_to_target = np.linalg.norm(tip_pos - target_pos, axis=-1)
 
         base_rwd = reward.tolerance(
             dist_to_target,
@@ -106,11 +114,12 @@ class AcrobotEnv(NpEnv):
 
         distance_reward = 0.3 * (1.0 - np.clip(dist_to_target / 2.0, 0, 1.0))
 
-        dof_vel = data.dof_vel
         vel_magnitude = np.mean(np.abs(dof_vel), axis=-1)
         velocity_penalty = 0.01 * np.maximum(0, vel_magnitude - 2.0)
 
         rwd = base_rwd + continuous_reward + distance_reward - velocity_penalty
+
+        rwd = rwd * self._cfg.reward_scale
 
         self._step_count += 1
 
@@ -118,29 +127,29 @@ class AcrobotEnv(NpEnv):
 
         terminated = np.logical_or(self._step_count >= self._max_steps, terminated)
 
-        terminated = np.logical_or(np.isnan(obs).any(axis=-1), terminated)
+        terminated = np.logical_or(np.isnan(dof_pos).any(axis=-1), terminated)
+        terminated = np.logical_or(np.isnan(dof_vel).any(axis=-1), terminated)
+        terminated = np.logical_or(np.isnan(rwd), terminated)
 
-        state.obs = obs
         state.reward = rwd
         state.terminated = terminated
         return state
 
-    def reset(self, data: mtx.SceneData) -> tuple[np.ndarray, dict]:
-        data.reset(self._model)
-        num_reset = data.shape[0]
+    def reset(self, env_ids: np.ndarray) -> dict:
+        num_reset = len(env_ids)
 
         shoulder_angle = np.random.uniform(-np.pi, np.pi, size=num_reset).astype(np.float32)
         elbow_angle = np.random.uniform(-np.pi, np.pi, size=num_reset).astype(np.float32)
 
         dof_pos = np.stack([shoulder_angle, elbow_angle], axis=-1)
-        dof_vel = np.zeros((*data.shape, self._num_dof_vel), dtype=np.float32)
+        dof_vel = np.zeros((num_reset, 2), dtype=np.float32)
 
-        data.set_dof_vel(dof_vel)
-        data.set_dof_pos(dof_pos, self._model)
-        self._model.forward_kinematic(data)
+        self._reset_position[env_ids] = dof_pos
+        self._reset_velocity[env_ids] = dof_vel
+        self._reset_program.execute(env_ids)
+        self.sim_data.execute(np.asarray(env_ids, np.int64))
 
-        obs = self._get_obs(data)
-        return obs, {}
+        return {}
 
     def _reset_done_envs(self):
         """

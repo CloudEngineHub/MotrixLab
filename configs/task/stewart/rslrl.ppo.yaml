@@ -1,0 +1,33 @@
+# @package _global_
+# Task stewart: rslrl.ppo shared training recipe.
+defaults:
+  - /algo_base@algo: rslrl.ppo
+  - _self_
+task:
+  env: stewart
+  rllib: rslrl
+  algo: ppo
+  train_backend: null
+num_envs: 128
+play_num_envs: 1
+seed: 42
+algo:
+  num_steps_per_env: 64
+  max_iterations: 400
+  actor:
+    hidden_dims:
+      - 128
+      - 128
+    activation: tanh
+    init_noise_std: 0.3
+  critic:
+    hidden_dims:
+      - 128
+      - 128
+    activation: tanh
+  algorithm:
+    learning_rate: 0.0001
+    clip_param: 0.15
+    desired_kl: 0.012
+    entropy_coef: 0.0001
+    max_grad_norm: 0.5

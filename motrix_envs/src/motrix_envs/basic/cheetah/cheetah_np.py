@@ -1,52 +1,61 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
 
 import gymnasium as gym
-import motrixsim as mtx
 import numpy as np
 
-from motrix_envs import registry
+from motrix_env_core import registry
+from motrix_env_core.array.env import ArrayEnvState
+from motrix_env_core.direct import reward
+from motrix_env_core.direct.env import DirectEnv
+from motrix_env_core.sim import (
+    BodyJointPositionWrite,
+    DofPositionQuery,
+    DofVelocityQuery,
+    LinkPositionQuery,
+    SensorValuesQuery,
+)
+from motrix_env_core.sim.write import BodyJointVelocityWrite, CtrlTargetsWrite
 from motrix_envs.basic.cheetah.cfg import CheetahEnvCfg
-from motrix_envs.np import reward
-from motrix_envs.np.env import NpEnv, NpEnvState
+
+_SIM_DATA_QUERIES = {
+    "dof_pos": DofPositionQuery(),
+    "dof_vel": DofVelocityQuery(),
+    "torso_pos": LinkPositionQuery(link="torso"),
+    "torso_subtreelinvel": SensorValuesQuery(sensors=("torso_subtreelinvel",)),
+}
+_SIM_MODEL_QUERIES = {}
 
 
-@registry.env("dm-cheetah", "np")
-class CheetahEnv(NpEnv):
+@registry.env("dm-cheetah")
+class CheetahEnv(DirectEnv):
     _observation_space: gym.spaces.Box
     _action_space: gym.spaces.Box
 
-    def __init__(self, cfg: CheetahEnvCfg, num_envs=1):
-        super().__init__(cfg, num_envs)
+    def __init__(self, cfg: CheetahEnvCfg, num_envs=1, backend: str | None = None):
+        super().__init__(cfg, num_envs, backend=backend)
+        self.model = self.sim.compile_model({})
+        self.sim_data = self.sim.compile_reads(_SIM_DATA_QUERIES)
+        self._ctrl_writes = self.sim.write_compiler.compile({"ctrl": CtrlTargetsWrite()})
+        self._reset_program = self.sim.write_compiler.compile(
+            {"cheetah_position": BodyJointPositionWrite("torso"), "cheetah_velocity": BodyJointVelocityWrite("torso")},
+            reset=True,
+        )
+        self._reset_position = self._reset_program.buffer("cheetah_position")
+        self._reset_velocity = self._reset_program.buffer("cheetah_velocity")
         self._init_obs_space()
         self._init_action_space()
-        self._torso = self._model.get_link("torso")
         self._run_speed = cfg.run_speed
-        self._joint_limits = self._model.joint_limits
 
     def _init_obs_space(self):
-        obs_dim = (self._model.num_dof_pos - 1) + self._model.num_dof_vel
+        obs_dim = (self.num_dof_pos - 1) + self.num_dof_vel
         self._observation_space = gym.spaces.Box(-np.inf, np.inf, (obs_dim,), dtype=np.float64)
 
     def _init_action_space(self):
-        model = self._model
         self._action_space = gym.spaces.Box(
             low=-1.0,
             high=1.0,
-            shape=(model.num_actuators,),
+            shape=(self.num_actuators,),
             dtype=np.float32,
         )
 
@@ -58,28 +67,29 @@ class CheetahEnv(NpEnv):
     def action_space(self):
         return self._action_space
 
-    def apply_action(self, actions, state):
-        state.data.actuator_ctrls = actions
+    def apply_action(self, actions, state: ArrayEnvState) -> ArrayEnvState:
+        ctrl = self._ctrl_writes.buffer("ctrl")
+        ctrl[:] = np.asarray(actions, dtype=np.float32)
+        self._ctrl_writes.execute()
         return state
 
-    def _get_obs(self, data: mtx.SceneData) -> np.ndarray:
-        qpos = data.dof_pos
-        pos = qpos[:, 1:].copy()  # exclude x position
-        vel = data.dof_vel
+    def compute_observation(self, state: ArrayEnvState) -> ArrayEnvState:
+        inputs = self.sim_data
+        pos = inputs["dof_pos"][:, 1:].copy()  # exclude x position
+        vel = inputs["dof_vel"]
         obs = np.concatenate([pos, vel], axis=-1)
-        return obs
+        return state.replace(obs=obs)
 
-    def update_state(self, state: NpEnvState) -> NpEnvState:
-        data = state.data
-
-        # === compute obs ===
-        obs = self._get_obs(data)
-
+    def compute_transition(self, state: ArrayEnvState) -> ArrayEnvState:
+        self.sim_data.execute()
+        inputs = self.sim_data
         # === Terminated ===
-        terminated = np.zeros(data.shape[0], dtype=bool)
+        terminated = np.zeros(self._num_envs, dtype=bool)
+        terminated |= np.isnan(inputs["dof_pos"]).any(axis=-1)
+        terminated |= np.isnan(inputs["dof_vel"]).any(axis=-1)
 
         # ==== compute reward ====
-        vel = self._model.get_sensor_value("torso_subtreelinvel", data)
+        vel = inputs["torso_subtreelinvel"]
         rwd_speed = reward.tolerance(
             vel[:, 0],
             bounds=(self._run_speed, float("inf")),
@@ -88,33 +98,27 @@ class CheetahEnv(NpEnv):
             sigmoid="linear",
         )
 
-        torso_height = self._torso.get_position(data)[:, 2]
+        torso_height = inputs["torso_pos"][:, 2]
         rwd_posture = -1.5 * (torso_height - 0.75) ** 2
         rwd_posture = np.clip(rwd_posture, -1.0, 1.0)
 
         rwd = rwd_speed + rwd_posture
 
         return state.replace(
-            obs=obs,
             reward=rwd,
             terminated=terminated,
         )
 
-    def reset(self, data: mtx.SceneData) -> tuple[np.ndarray, dict]:
-        data.reset(self._model)
-        num = data.shape[0]
+    def reset(self, env_ids: np.ndarray) -> dict:
+        num = len(env_ids)
 
-        limited_idx = np.where(self._model.joint_limits == 1)[0]
-        low = self._joint_limits[0, limited_idx]
-        high = self._joint_limits[1, limited_idx]
+        qpos = np.zeros((num, self._reset_position.shape[1]), dtype=np.float32)
+        dof_vel = np.zeros((num, self._reset_velocity.shape[1]), dtype=np.float32)
+        self._reset_position[env_ids] = qpos
+        self._reset_velocity[env_ids] = dof_vel
+        self._reset_program.execute(env_ids)
 
-        qpos = data.dof_pos
-        qpos[:, limited_idx] = np.random.uniform(low, high, size=(num, len(limited_idx)))
-        data.set_dof_pos(qpos, self._model)
+        row_ids = np.asarray(env_ids, np.int64)
+        self.sim_data.execute(row_ids)
 
-        for _ in range(200):
-            self._model.step(data)
-
-        obs = self._get_obs(data)
-
-        return obs, {}
+        return {}

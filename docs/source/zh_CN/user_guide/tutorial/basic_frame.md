@@ -1,152 +1,119 @@
 # 基础框架
 
-MotrixLab 是一个机器人强化学习平台，这一节我们会介绍 MotrixLab 的框架设计以及各个组成部分之间的关系。如果您已经熟悉强化学习的内容，可以直接跳转至下一节，了解如何开发自己的训练环境。
+MotrixLab 将环境实现、训练方法、配置和命令行编排分成独立层。本节介绍这些部分如何协作，便于后续开发自定义环境或训练后端。
 
-## MotrixLab 的框架设计
+## 仓库分层
 
-MotrixLab 采用分层架构设计，将训练环境与训练逻辑进行了清晰拆分：
-
-```
+```text
 MotrixLab/
-├── motrix_envs/               # 环境层：物理仿真和任务定义
-│   ├── basic/                  # 基础环境（cartpole、walker等）
-│   ├── locomotion/             # 运动环境（GO1机器人等）
-│   ├── np/                     # NumPy仿真后端框架
-│   ├── base.py                 # 环境基类
-│   └── registry.py             # 环境注册系统
-├── motrix_rl/                # 训练层：RL算法和配置
-│   ├── skrl/                   # SKRL框架集成（JAX/PyTorch）
-│   ├── rslrl/                  # RSLRL框架集成（PyTorch）
-│   ├── base.py                 # RL配置基类
-│   └── registry.py             # RL配置注册系统
-└── scripts
-    ├── train.py                # 训练入口脚本
-    ├── play.py                 # 测试入口脚本
-    └── view.py                 # 可视化脚本
+├── motrix_envs/                 # 环境配置、实现与注册表
+│   └── src/motrix_envs/
+├── motrix_rl/                   # RL framework、provider、trainer 与训练产物
+│   └── src/motrix_rl/
+├── configs/
+│   ├── algo_base/               # 各 RL provider 的完整类型化默认配置
+│   └── task/<env>/              # 各环境的训练配方
+└── scripts/
+    ├── train.py                 # Hydra 训练入口
+    ├── play.py                  # 基于 metadata 的策略回放入口
+    └── view.py                  # 随机动作环境预览入口
 ```
 
-## 核心组件架构
+主要运行流程如下：
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        用户接口层                                │
-│                    train.py │ play.py │ view.py                   │
-└─────────────────────────────────────────────────────────────────┘
-                                │
-                                ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    训练算法层 (SKRL / RSLRL)                    │
-│                    PPO训练器 │ 网络架构 │ 优化器                 │
-└─────────────────────────────────────────────────────────────────┘
-                                │
-                                ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      环境实现层                                  │
-│  环境配置(EnvCfg) │ 环境实现(Env) │ 奖励函数(Reward)            │
-└─────────────────────────────────────────────────────────────────┘
-                                │
-                                ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    物理仿真层 (MotrixSim)                       │
-│                    MJCF模型 │ 物理引擎 │ 碰撞检测                │
-└─────────────────────────────────────────────────────────────────┘
+```text
+task=<环境>/<框架>.<算法>
+              │
+              ▼
+Hydra 组合根配置、算法基础配置、Task 与 CLI 覆盖
+              │
+              ▼
+runner 解析 AgentProvider 并创建 Trainer
+              │
+              ▼
+Trainer 创建已注册环境并执行 train/play
+              │
+              ▼
+runs/... 保存 metadata、最终 Task 配置与 checkpoint
 ```
 
-## 核心组件详解
+## 核心组件
 
-### 1. 训练环境 (Training Environment)
+### 环境层
 
-**位置**：环境实现层
+一个环境通常包含：
 
-训练环境是 MotrixLab 的核心组件，包含三个关键部分：
+-   使用 `@registry.envcfg("name")` 注册的 `EnvCfg` 数据类。
+-   使用 `@registry.env("name")` 注册的环境实现。
+-   observation、reward、termination、reset 和 action application 等任务逻辑。
 
--   **环境配置 (EnvCfg)**：定义物理仿真参数（模型文件、时间步长、episode 长度等）和任务特定参数
--   **环境实现 (Env)**：继承基础环境类，实现具体的任务逻辑、物理仿真交互和终止条件检查
--   **奖励函数 (Reward)**：在环境的 step 方法中实现，根据当前状态和动作计算奖励值
+环境注册表维护环境名及其仿真后端实现。`scripts/view.py`、训练器和回放流程都通过同一注册表创建环境。
 
-环境通过装饰器注册到系统中。
+### RL Framework 与 Provider 层
 
-### 2. 奖励函数 (Reward Function)
+`RlFramework` 定义 `skrl`、`rslrl`、`motrix` 等 RL 框架命名空间。每个 framework 包含一个或多个 `AgentProvider`。Provider 声明：
 
-**位置**：配置管理层 + 环境实现层
+-   算法名，例如 `ppo` 或 `fastsac`。
+-   训练后端，例如 `jax` 或 `torch`。
+-   它接受的类型化算法配置 schema。
+-   checkpoint 格式以及如何创建 trainer。
 
-奖励函数在 MotrixLab 中采用双重结构设计：
+Framework 与 provider 代表可执行能力，因此在 Python 中注册。扩展接口见[添加自定义训练后端](custom_training_backend.md)。
 
--   **配置层面**：在配置类中定义奖励权重、奖励组件类型和缩放参数
--   **实现层面**：在环境的 `_compute_reward` 方法中根据配置参数计算具体奖励值
+### Hydra 配置层
 
-这种设计使得奖励函数既可以通过配置文件灵活调整，又能在代码中实现复杂的计算逻辑。
+训练参数保存在 YAML 中，不再使用 Python Task 子类：
 
-### 3. 配置参数 (Configuration Parameters)
+-   `configs/algo_base/<framework>.<algorithm>.yaml` 提供 provider 所有算法字段的完整默认值。
+-   `configs/task/<env>/<framework>.<algorithm>.yaml` 选择环境并保存任务调优参数。
+-   可选的 `.<backend>.yaml` Task 只保存后端差异。
+-   CLI 的 `key=value` 参数在组合完成后应用临时覆盖。
 
-**位置**：配置管理层
+Provider 的数据类 schema 负责校验字段名和类型，YAML 是配置值的唯一来源。Task 通过扫描 `configs/task/` 自动发现，不再存在 RL 配置装饰器或 Python Task 注册表。
 
-配置参数采用分层管理结构：
+### Runner 与 Trainer 层
 
--   **环境配置 (EnvCfg)**：控制物理仿真和任务行为，包括仿真参数、重置噪声、时间限制等
--   **训练配置 (RLCfg)**：控制强化学习算法，包括网络结构、学习率、批次大小、训练步数等
+公共 runner 负责与框架无关的编排：
 
-配置类支持继承、参数验证和运行时覆盖，确保参数的合理性和灵活性。
+1. 从组合配置读取 `task.env`、`task.rllib`、`task.algo` 和 `task.train_backend`。
+2. 解析兼容的 provider 和训练后端。
+3. 创建 run 目录并写入 `metadata.json` 与 `task_config.yaml`。
+4. 构造 `TrainerContext`，再由 provider 创建 trainer。
+5. 执行训练或回放，并登记 checkpoint artifact。
 
-### 4. 注册系统 (Registry System)
+Trainer 负责框架特有的模型创建、优化、checkpoint 序列化和推理。它应通过环境注册表创建环境，而不是依赖某个具体环境类。
 
-**位置**：连接各组件的枢纽
+## 训练流程
 
-注册系统通过装饰器模式实现组件的自动注册：
+例如：
 
--   环境配置类通过 `@registry.envcfg()` 注册
--   环境实现类通过 `@registry.env()` 注册，支持多后端
--   RL 配置类通过 `@rlcfg()` 注册
-
-注册系统实现了组件的解耦，使得新增环境或修改配置变得简单快捷。
-
-## 数据流和工作流程
-
-### 训练流程概览
-
-```
-用户命令 → 配置解析 → 环境创建 → 训练循环 → 模型保存
-   ↓
-train.py --env cartpole
-   ↓
-查找配置类 → 创建环境 → 启动PPO训练 → 保存模型
+```bash
+uv run scripts/train.py task=cartpole/skrl.ppo num_envs=1024
 ```
 
-### 核心工作流程
+该命令会依次执行：
 
-1. **环境定义**：在 `/motrix_envs/` 中创建环境配置类和实现类
-2. **自动注册**：通过装饰器将组件注册到系统中
-3. **配置加载**：命令行启动时，系统自动查找并加载对应的配置
-4. **环境创建**：工厂模式创建环境实例，支持参数覆盖
-5. **训练执行**：PPO 算法与环境交互，收集数据并更新策略
-6. **结果保存**：定期保存检查点和最终模型
-
-### 配置参数的作用
-
-配置参数在整个流程中起到关键的连接作用：
-
--   **环境配置**决定物理仿真行为（时间步长、模型文件、噪声等）
--   **奖励配置**影响学习信号（奖励权重、计算方式等）
--   **训练配置**控制算法行为（网络结构、学习率、批次大小等）
+1. Hydra 组合 `configs/train.yaml`、`configs/algo_base/skrl.ppo.yaml` 和 `configs/task/cartpole/skrl.ppo.yaml`。
+2. `num_envs=1024` 只覆盖本次运行的 Task 值。
+3. runner 解析 SKRL PPO provider，并从可用的 JAX/Torch 后端中选择一个。
+4. trainer 创建已注册的 `cartpole` 环境并开始优化。
+5. run metadata、最终 Task 快照、日志和 checkpoint manifest 写入 `runs/cartpole/`。
 
 ## 多框架支持
 
-MotrixLab 的分层设计天然支持多种 RL 框架：
+同一个环境可以拥有多份 Task 配方，不需要修改环境实现：
 
--   **仿真后端**：MotrixSim（CPU）
--   **训练框架**：
-    -   **SKRL**：支持 JAX 和 PyTorch 后端，支持 GPU 加速
-    -   **RSLRL**：支持 PyTorch 后端，支持 GPU 加速
--   **框架选择**：使用 `--rllib` 参数在 `skrl`（默认）和 `rslrl` 之间选择
+```bash
+uv run scripts/train.py task=cartpole/skrl.ppo
+uv run scripts/train.py task=cartpole/rslrl.ppo
+```
 
-## 设计优势
+SKRL 提供 JAX 与 Torch provider，RSLRL 使用 Torch；`motrix.fastsac` 通过 `algo.asynchronous` 选择同步或异步 Torch trainer。所选 Task 与 provider 共同决定算法配置和输出 metadata。
 
-这种架构设计带来了以下核心优势：
+## 分层带来的优势
 
-1. **模块解耦**：环境开发与训练逻辑完全分离
-2. **配置灵活**：支持分层配置和运行时参数覆盖
-3. **扩展性强**：通过注册系统轻松添加新组件
-4. **多后端兼容**：同一环境可使用不同仿真和训练后端
-5. **实验友好**：配置可保存、比较，确保实验可重现
-
-通过这个框架设计，MotrixLab 为机器人强化学习提供了一个清晰、灵活且易用的开发平台。
+1. **环境复用**：一个注册环境可以由多个 RL 框架训练。
+2. **类型化配置**：provider schema 会在训练前拒绝拼写错误或类型不兼容的 YAML/CLI 值。
+3. **实验可复现**：每个 run 保存最终 Task 配置和 provider 身份。
+4. **易于扩展**：新增环境只需注册环境并添加 Task YAML；新增 RL 集成则添加 provider 与 trainer。
+5. **训练产物一致**：回放和续训依赖 metadata 与 checkpoint manifest，不猜测文件名。

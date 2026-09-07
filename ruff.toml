@@ -4,8 +4,8 @@ output-format = "concise"
 exclude = ["*.pyi"]
 
 [lint]
-# Enable isort (I), Pyflakes (`F`) and pycodestyle (E, W)
-select = ["I", "E", "F", "W"]
+# Enable isort (I), Pyflakes (`F`), pycodestyle (E, W) and pyupgrade (UP)
+select = ["I", "E", "F", "W", "UP"]
 # E741: Ambiguous variable name
 # https://docs.astral.sh/ruff/formatter/#conflicting-lint-rules
 ignore = ["E111", "E114", "E117", "E741"]
@@ -15,7 +15,18 @@ ignore = ["E111", "E114", "E117", "E741"]
 "__init__.py" = ["F401", "F403"]
 
 [lint.isort]
-known-first-party = ["motrix_envs", "motrix_rl"]
+known-first-party = [
+    "motrix_deploy",
+    "motrix_deploy_mujoco",
+    "motrix_deploy_unitree",
+    "motrix_deploy_tasks",
+    "motrix_env_core",
+    "motrix_env_motrixsim",
+    "motrix_env_mujoco",
+    "motrix_envs",
+    "motrix_rl",
+    "system_identification",
+]
 
 [format]
 # Enable reformatting of code snippets in docstrings.

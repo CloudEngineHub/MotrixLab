@@ -1,0 +1,27 @@
+# @package _global_
+# Task acrobot: rslrl.ppo shared training recipe.
+defaults:
+  - /algo_base@algo: rslrl.ppo
+  - _self_
+task:
+  env: acrobot
+  rllib: rslrl
+  algo: ppo
+  train_backend: null
+num_envs: 2048
+play_num_envs: 16
+seed: 42
+algo:
+  num_steps_per_env: 32
+  max_iterations: 900
+  actor:
+    hidden_dims:
+      - 32
+      - 32
+  critic:
+    hidden_dims:
+      - 32
+      - 32
+  algorithm:
+    learning_rate: 0.0001
+    entropy_coef: 0.005

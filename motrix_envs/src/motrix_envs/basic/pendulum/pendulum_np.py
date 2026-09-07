@@ -1,47 +1,51 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
 
 import gymnasium as gym
-import motrixsim as mtx
 import numpy as np
 
-from motrix_envs import registry
-from motrix_envs.np import reward as reward_utils
-from motrix_envs.np.env import NpEnv, NpEnvState
+from motrix_env_core import registry
+from motrix_env_core.array.env import ArrayEnvState
+from motrix_env_core.direct import reward as reward_utils
+from motrix_env_core.direct.env import DirectEnv
+from motrix_env_core.sim import (
+    ActuatorCtrlQuery,
+    DofPositionQuery,
+    DofVelocityQuery,
+    JointPositionWrite,
+)
+from motrix_env_core.sim.write import CtrlTargetsWrite, JointVelocityWrite
 
 from .cfg import PendulumEnvCfg
 
+_SIM_DATA_QUERIES = {
+    "dof_pos": DofPositionQuery(),
+    "dof_vel": DofVelocityQuery(),
+    "actuator_ctrls": ActuatorCtrlQuery(),
+}
+_SIM_MODEL_QUERIES = {}
 
-@registry.env("pendulum", "np")
-class PendulumEnv(NpEnv):
+
+@registry.env("pendulum")
+class PendulumEnv(DirectEnv):
     _cfg: PendulumEnvCfg
 
-    def __init__(self, cfg: PendulumEnvCfg, num_envs: int = 1):
-        super().__init__(cfg, num_envs=num_envs)
-        ctrl_limits = self._model.actuator_ctrl_limits
+    def __init__(self, cfg: PendulumEnvCfg, num_envs=1, backend: str | None = None):
+        super().__init__(cfg, num_envs, backend=backend)
+        self.model = self.sim.compile_model(_SIM_MODEL_QUERIES)
+        self.sim_data = self.sim.compile_reads(_SIM_DATA_QUERIES)
+        self._ctrl_writes = self.sim.write_compiler.compile({"ctrl": CtrlTargetsWrite()})
+        self._reset_program = self.sim.write_compiler.compile(
+            {"pendulum_position": JointPositionWrite(("hinge",)), "pendulum_velocity": JointVelocityWrite(("hinge",))},
+            reset=True,
+        )
+        self._reset_position = self._reset_program.buffer("pendulum_position")
+        self._reset_velocity = self._reset_program.buffer("pendulum_velocity")
+        ctrl_limits = np.asarray([spec.ctrl_range for spec in self.model.actuators], dtype=np.float32).T
         self._action_low = float(ctrl_limits[0, 0])
         self._action_high = float(ctrl_limits[1, 0])
         self._action_space = gym.spaces.Box(-1.0, 1.0, (1,), dtype=np.float32)
         self._observation_space = gym.spaces.Box(-np.inf, np.inf, (3,), dtype=np.float32)
-        self._num_dof_pos = self._model.num_dof_pos
-        self._num_dof_vel = self._model.num_dof_vel
-        self._init_dof_pos = self._model.compute_init_dof_pos()
-        self._init_dof_vel = np.zeros(
-            (self._model.num_dof_vel,),
-            dtype=np.float32,
-        )
 
     @property
     def observation_space(self):
@@ -51,25 +55,32 @@ class PendulumEnv(NpEnv):
     def action_space(self):
         return self._action_space
 
-    def apply_action(self, actions: np.ndarray, state: NpEnvState):
+    def apply_action(self, actions: np.ndarray, state: ArrayEnvState):
         actions = np.clip(actions, -1.0, 1.0)
         scaled = self._action_low + (actions + 1.0) * 0.5 * (self._action_high - self._action_low)
-        state.data.actuator_ctrls = scaled
+        ctrl = self._ctrl_writes.buffer("ctrl")
+        ctrl[:] = np.asarray(scaled, dtype=np.float32)
+        self._ctrl_writes.execute()
         return state
 
-    def update_state(self, state: NpEnvState):
-        # compute observation
-        data = state.data
-        dof_pos = data.dof_pos
-        dof_vel = data.dof_vel
-        angle = dof_pos[:, 0]
-        ang_vel = dof_vel[:, 0]
+    def compute_observation(self, state: ArrayEnvState):
+        angle = self.sim_data["dof_pos"][:, 0]
+        ang_vel = self.sim_data["dof_vel"][:, 0]
         obs = np.stack([np.cos(angle), np.sin(angle), ang_vel], axis=-1)
         assert obs.shape == (self._num_envs, 3)
+        return state.replace(obs=obs)
+
+    def compute_transition(self, state: ArrayEnvState):
+        self.sim_data.execute()
+        inputs = self.sim_data
+        dof_pos = inputs["dof_pos"]
+        dof_vel = inputs["dof_vel"]
+        angle = dof_pos[:, 0]
+        ang_vel = dof_vel[:, 0]
 
         # compute reward
         angle_wrapped = (angle + np.pi) % (2 * np.pi) - np.pi
-        ctrl = data.actuator_ctrls[:, 0]
+        ctrl = inputs["actuator_ctrls"][:, 0]
         # In this model, zero angle corresponds to the hanging-down position.
         # Shift the target by pi to encourage the upright (inverted) posture.
         upright = (1.0 + np.cos(angle_wrapped)) * 0.5
@@ -90,28 +101,25 @@ class PendulumEnv(NpEnv):
         )
 
         # compute terminated
-        terminated = np.isnan(obs).any(axis=-1)
+        terminated = np.isnan(dof_pos).any(axis=-1) | np.isnan(dof_vel).any(axis=-1)
 
-        state.obs = obs
         state.reward = reward
         state.terminated = terminated
         state.info["prev_ctrl"] = ctrl
         return state
 
-    def reset(self, data: mtx.SceneData):
+    def reset(self, env_ids: np.ndarray):
         cfg: PendulumEnvCfg = self._cfg
         reset_noise_scale = getattr(cfg, "reset_noise_scale", 0.0)
-        num_reset = data.shape[0]
-        dof_pos = np.zeros((num_reset, self._num_dof_pos), dtype=np.float32)
-        dof_vel = np.zeros((num_reset, self._num_dof_vel), dtype=np.float32)
+        num_reset = len(env_ids)
+        dof_pos = np.zeros((num_reset, 1), dtype=np.float32)
+        dof_vel = np.zeros((num_reset, 1), dtype=np.float32)
         dof_pos[:, 0] = np.random.uniform(-np.pi, np.pi, size=(num_reset,))
         if reset_noise_scale > 0.0:
             dof_vel[:, 0] = np.random.uniform(-reset_noise_scale, reset_noise_scale, size=(num_reset,))
 
-        data.reset(self._model)
-        data.set_dof_vel(dof_vel)
-        data.set_dof_pos(dof_pos, self._model)
-        angle = dof_pos[:, 0]
-        ang_vel = dof_vel[:, 0]
-        obs = np.stack([np.cos(angle), np.sin(angle), ang_vel], axis=-1)
-        return obs, {"prev_ctrl": np.zeros((num_reset,), dtype=np.float32)}
+        self._reset_position[env_ids] = dof_pos
+        self._reset_velocity[env_ids] = dof_vel
+        self._reset_program.execute(env_ids)
+        self.sim_data.execute(np.asarray(env_ids, np.int64))
+        return {"prev_ctrl": np.zeros((num_reset,), dtype=np.float32)}

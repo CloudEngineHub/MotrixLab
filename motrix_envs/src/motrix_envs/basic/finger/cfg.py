@@ -1,35 +1,44 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
 
 import os
-from dataclasses import dataclass
 
-from motrix_envs import registry
-from motrix_envs.base import EnvCfg
+from motrix_env_core import registry
+from motrix_env_core.base import SimCfg
+from motrix_env_core.config import configclass
+from motrix_env_core.config.scene import SceneCfg
+from motrix_env_core.direct.env import DirectEnvCfg
 
 model_file = os.path.dirname(__file__) + "/finger.xml"
 spin_model_file = os.path.dirname(__file__) + "/finger_spin.xml"
 turn_easy_model_file = os.path.dirname(__file__) + "/finger_turn_easy.xml"
 turn_hard_model_file = os.path.dirname(__file__) + "/finger_turn_hard.xml"
 
+# Collidable geoms shared by every finger model variant (the distal capsule
+# and the freejoint-backed target_geom set contype/conaffinity=0 and never
+# collide). All cross pairs of this set reproduce the legacy
+# ``get_contact_query(data).num_contacts > 0`` reset rejection check exactly.
+_FINGER_COLLIDABLE_GEOMS = (
+    "ground",
+    "proximal_decoration",
+    "proximal",
+    "fingertip",
+    "cap1",
+    "cap2",
+    "spinner_decoration",
+)
+_FINGER_COLLISION_PAIRS = tuple(
+    (first, second)
+    for index, first in enumerate(_FINGER_COLLIDABLE_GEOMS)
+    for second in _FINGER_COLLIDABLE_GEOMS[index + 1 :]
+)
 
-@dataclass
-class FingerBaseCfg(EnvCfg):
-    model_file: str = model_file
+
+@configclass
+class FingerBaseCfg(DirectEnvCfg):
+    scene: SceneCfg = SceneCfg(file=model_file)
     max_episode_seconds: float = 10.0
-    sim_dt: float = 0.01
+    sim: SimCfg = SimCfg(dt=0.01)
     ctrl_dt: float = 0.02
 
     # Task setup
@@ -74,9 +83,14 @@ class FingerBaseCfg(EnvCfg):
 
 
 @registry.envcfg("dm-finger-spin")
-@dataclass
+@configclass
 class FingerSpinCfg(FingerBaseCfg):
-    model_file: str = spin_model_file
+    """Use the robotic finger to continuously spin a free object.
+
+    zh_CN: 使用机械手指持续旋转自由物体。
+    """
+
+    scene: SceneCfg = SceneCfg(file=spin_model_file)
     task: str = "spin"
     reward_mode: str = "shaped"
     spin_approach_reward_scale: float = 0.15
@@ -84,9 +98,14 @@ class FingerSpinCfg(FingerBaseCfg):
 
 
 @registry.envcfg("dm-finger-turn-easy")
-@dataclass
+@configclass
 class FingerTurnEasyCfg(FingerBaseCfg):
-    model_file: str = turn_easy_model_file
+    """Turn the finger object to a target angle with an easy tolerance.
+
+    zh_CN: 将机械手指上的物体转到宽容差目标角度。
+    """
+
+    scene: SceneCfg = SceneCfg(file=turn_easy_model_file)
     task: str = "turn"
     target_radius: float = 0.07
     reward_mode: str = "shaped"
@@ -94,9 +113,14 @@ class FingerTurnEasyCfg(FingerBaseCfg):
 
 
 @registry.envcfg("dm-finger-turn-hard")
-@dataclass
+@configclass
 class FingerTurnHardCfg(FingerTurnEasyCfg):
-    model_file: str = turn_hard_model_file
+    """Turn the finger object precisely to a target angle.
+
+    zh_CN: 将机械手指上的物体精确转到目标角度。
+    """
+
+    scene: SceneCfg = SceneCfg(file=turn_hard_model_file)
     target_radius: float = 0.03
     reward_mode: str = "shaped"
     turn_reward_shape: str = "exp"

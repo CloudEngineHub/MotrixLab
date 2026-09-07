@@ -1,0 +1,29 @@
+# @package _global_
+# Task franka-lift-cube: rslrl.ppo shared training recipe.
+defaults:
+  - /algo_base@algo: rslrl.ppo
+  - _self_
+task:
+  env: franka-lift-cube
+  rllib: rslrl
+  algo: ppo
+  train_backend: null
+num_envs: 2048
+play_num_envs: 16
+seed: 42
+algo:
+  num_steps_per_env: 64
+  max_iterations: 500
+  actor:
+    hidden_dims:
+      - 256
+      - 128
+      - 128
+  critic:
+    hidden_dims:
+      - 256
+      - 128
+      - 128
+  algorithm:
+    learning_rate: 0.0005
+    entropy_coef: 0.001

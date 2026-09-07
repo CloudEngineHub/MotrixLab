@@ -1,34 +1,67 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
 
 import gymnasium as gym
-import motrixsim as mtx
 import numpy as np
 
-from motrix_envs import registry
-from motrix_envs.np.env import NpEnv, NpEnvState
+from motrix_env_core import registry
+from motrix_env_core.array.env import ArrayEnvState
+from motrix_env_core.direct.env import DirectEnv
+from motrix_env_core.sim import (
+    BodyAngularVelocityWrite,
+    BodyLinearVelocityWrite,
+    BodyPositionWrite,
+    BodyRotationWrite,
+    DofPositionQuery,
+    DofVelocityQuery,
+    GeomPositionQuery,
+    GeomSpecsQuery,
+    JointPositionWrite,
+)
+from motrix_env_core.sim.write import CtrlTargetsWrite, JointVelocityWrite, MocapPoseWrite
 
 from .cfg import BounceBallEnvCfg
 
+_SIM_DATA_QUERIES = {
+    "dof_pos": DofPositionQuery(),
+    "dof_vel": DofVelocityQuery(),
+    "paddle_pos": GeomPositionQuery(geom="blocker"),
+}
+_SIM_MODEL_QUERIES = {"geoms": GeomSpecsQuery(names=("blocker",))}
 
-@registry.env("bounce_ball", "np")
-class BounceBallEnv(NpEnv):
+
+@registry.env("bounce_ball")
+class BounceBallEnv(DirectEnv):
     _cfg: BounceBallEnvCfg
 
-    def __init__(self, cfg: BounceBallEnvCfg, num_envs: int = 1):
-        super().__init__(cfg, num_envs=num_envs)
+    def __init__(self, cfg: BounceBallEnvCfg, num_envs=1, backend: str | None = None):
+        super().__init__(cfg, num_envs, backend=backend)
+        self.model = self.sim.compile_model(_SIM_MODEL_QUERIES)
+        self.sim_data = self.sim.compile_reads(_SIM_DATA_QUERIES)
+        self._marker_writes = self.sim.write_compiler.compile(
+            {
+                "height": MocapPoseWrite(("target_height_marker",)),
+                "paddle": MocapPoseWrite(("paddle_home_marker",)),
+            },
+        )
+        self._ctrl_writes = self.sim.write_compiler.compile({"ctrl": CtrlTargetsWrite()})
+        self._reset_program = self.sim.write_compiler.compile(
+            {
+                "arm_position": JointPositionWrite(tuple(f"Joint{i}" for i in range(1, 7))),
+                "arm_velocity": JointVelocityWrite(tuple(f"Joint{i}" for i in range(1, 7))),
+                "ball_position": BodyPositionWrite(("ball_link",)),
+                "ball_rotation": BodyRotationWrite(("ball_link",)),
+                "ball_linear_velocity": BodyLinearVelocityWrite(("ball_link",)),
+                "ball_angular_velocity": BodyAngularVelocityWrite(("ball_link",)),
+            },
+            reset=True,
+        )
+        self._arm_reset_position = self._reset_program.buffer("arm_position")
+        self._arm_reset_velocity = self._reset_program.buffer("arm_velocity")
+        self._ball_reset_position = self._reset_program.buffer("ball_position")[:, 0]
+        self._ball_reset_rotation = self._reset_program.buffer("ball_rotation")[:, 0]
+        self._ball_reset_linear_velocity = self._reset_program.buffer("ball_linear_velocity")[:, 0]
+        self._ball_reset_angular_velocity = self._reset_program.buffer("ball_angular_velocity")[:, 0]
 
         # Action space: 6D joint position control
         self._action_space = gym.spaces.Box(-1.0, 1.0, (6,), dtype=np.float32)
@@ -36,27 +69,8 @@ class BounceBallEnv(NpEnv):
         # Observation space: joint states + paddle position + target height (29D)
         self._observation_space = gym.spaces.Box(-np.inf, np.inf, (29,), dtype=np.float32)
 
-        self._num_dof_pos = self._model.num_dof_pos
-        self._num_dof_vel = self._model.num_dof_vel
-
         # Initial arm joint positions
         self._init_arm_qpos = np.array(self._cfg.arm_init_qpos, dtype=np.float32) * np.pi / 180.0
-        self._init_dof_vel = np.zeros(self._model.num_dof_vel, dtype=np.float32)
-
-        # Full DOF positions (6 arm joints + 7 ball free joint)
-        self._init_dof_pos = np.zeros(self._model.num_dof_pos, dtype=np.float32)
-        self._init_dof_pos[:6] = self._init_arm_qpos
-
-        # Body and geom references
-        self._paddle_geom = self._model.get_geom("blocker")
-        self._ball_body_id = self._model.body_names.index("ball_link")
-
-        # Mocap bodies for visual markers
-        self._target_marker_body = self._model.get_body("target_height_marker")
-        assert self._target_marker_body.is_mocap, "target_height_marker must be a mocap body"
-
-        self._paddle_home_marker_body = self._model.get_body("paddle_home_marker")
-        assert self._paddle_home_marker_body.is_mocap, "paddle_home_marker must be a mocap body"
 
         # Action scaling
         self._action_scale = np.array(self._cfg.action_scale, dtype=np.float32)
@@ -107,23 +121,11 @@ class BounceBallEnv(NpEnv):
         """Denormalize action from [-1, 1] to joint position changes"""
         return self._action_scale * action + self._action_bias
 
-    def _compute_observation(self, data: mtx.SceneData, target_heights: np.ndarray) -> np.ndarray:
-        """Compute observation: joint states + paddle position + target height (29D)"""
-        dof_pos = data.dof_pos
-        dof_vel = data.dof_vel
-
-        # Get paddle position
-        paddle_pose = self._paddle_geom.get_pose(data)
-        paddle_xyz = paddle_pose[:, :3]
-
-        # Concatenate: DOF pos (13) + DOF vel (12) + paddle xyz (3) + target height (1)
-        obs = np.concatenate([dof_pos, dof_vel, paddle_xyz, target_heights[:, np.newaxis]], axis=-1)
-        return obs.astype(np.float32)
-
     def _compute_reward(
         self,
-        obs: np.ndarray,
-        data: mtx.SceneData = None,
+        dof_pos: np.ndarray,
+        dof_vel: np.ndarray,
+        paddle_pos: np.ndarray,
         consecutive_bounces: np.ndarray = None,
         bounce_detected: np.ndarray = None,
         target_heights: np.ndarray = None,
@@ -140,15 +142,15 @@ class BounceBallEnv(NpEnv):
             tuple: (total_reward, reward_details) where reward_details contains
                    individual reward components for analysis.
         """
-        # Extract ball state
-        ball_x = obs[:, 6]
-        ball_y = obs[:, 7]
-        ball_z = obs[:, 8]
-        ball_vz = obs[:, 13 + 8]
+        # Extract ball state: the ball's free joint contributes (x, y, z) at dof 6:9
+        ball_x = dof_pos[:, 6]
+        ball_y = dof_pos[:, 7]
+        ball_z = dof_pos[:, 8]
+        ball_vz = dof_vel[:, 8]
 
         # Extract paddle position
-        paddle_xy = obs[:, 25:27]
-        paddle_z = obs[:, 27]
+        paddle_xy = paddle_pos[:, :2]
+        paddle_z = paddle_pos[:, 2]
 
         # Target positions
         target_ball_x = self._cfg.target_ball_x
@@ -347,7 +349,7 @@ class BounceBallEnv(NpEnv):
         # Penalizes drastic action changes and excessive joint velocities
         # Encourages smooth and energy-efficient control
         # ============================================================================
-        num_envs = obs.shape[0]
+        num_envs = dof_pos.shape[0]
         if current_actions is None:
             current_actions = np.zeros((num_envs, 6), dtype=np.float32)
         if last_actions is None:
@@ -356,7 +358,7 @@ class BounceBallEnv(NpEnv):
         action_diff = current_actions - last_actions
         action_penalty = np.sum(np.square(action_diff), axis=-1)
 
-        joint_vel = data.dof_vel[:, :6]
+        joint_vel = self.sim_data["dof_vel"][:, :6]
         joint_vel_penalty = np.sum(np.square(joint_vel), axis=-1)
 
         # ============================================================================
@@ -432,12 +434,12 @@ class BounceBallEnv(NpEnv):
 
         return total_reward, reward_details
 
-    def _compute_terminated(self, obs: np.ndarray, target_heights: np.ndarray) -> np.ndarray:
+    def _compute_terminated(self, dof_pos: np.ndarray, dof_vel: np.ndarray, target_heights: np.ndarray) -> np.ndarray:
         """Check if episode should terminate based on DOF states"""
         # Extract ball position from DOF (indices 6-8 for x,y,z)
-        ball_x = obs[:, 6]  # Ball x position
-        ball_y = obs[:, 7]  # Ball y position
-        ball_z = obs[:, 8]  # Ball z position
+        ball_x = dof_pos[:, 6]  # Ball x position
+        ball_y = dof_pos[:, 7]  # Ball y position
+        ball_z = dof_pos[:, 8]  # Ball z position
 
         # Terminate if ball falls below ground or goes significantly higher than target
         terminated = (ball_z < 0.05) | (ball_z > target_heights + 1.0)
@@ -447,20 +449,20 @@ class BounceBallEnv(NpEnv):
 
         # Terminate if joint velocity is too high
         # Limit: 360 degrees/second = 2*pi rad/s ≈ 6.28 rad/s
-        joint_vel = obs[:, 13:19]  # Joint velocities (indices 13-18 for 6 arm joints)
+        joint_vel = dof_vel[:, :6]  # Joint velocities (first 6 DOFs are arm joints)
         max_joint_vel = 2.0 * np.pi  # 360 degrees/second in radians
         terminated |= np.abs(joint_vel).max(axis=-1) > max_joint_vel
 
         return terminated
 
-    def apply_action(self, actions: np.ndarray, state: NpEnvState) -> NpEnvState:
+    def apply_action(self, actions: np.ndarray, state: ArrayEnvState) -> ArrayEnvState:
         """Apply action to control paddle position"""
         # Store last actions for penalty calculation
         state.info["last_actions"] = state.info.get("current_actions", np.zeros_like(actions))
         state.info["current_actions"] = actions
 
         # Get current joint positions
-        current_joint_pos = state.data.dof_pos[:, :6]  # First 6 DOFs are arm joints
+        current_joint_pos = self.sim_data["dof_pos"][:, :6]  # First 6 DOFs are arm joints
 
         # Denormalize actions to get actual position changes
         delta_positions = self._denormalize_action(actions)
@@ -469,26 +471,40 @@ class BounceBallEnv(NpEnv):
         target_positions = current_joint_pos + delta_positions
 
         # Apply target positions as actuator controls (position control)
-        state.data.actuator_ctrls = target_positions
+        ctrl = self._ctrl_writes.buffer("ctrl")
+        ctrl[:] = np.asarray(target_positions, dtype=np.float32)
+        self._ctrl_writes.execute()
         return state
 
-    def update_state(self, state: NpEnvState) -> NpEnvState:
-        """Update state with new observations, rewards, and termination flags"""
-        data = state.data
+    def compute_observation(self, state: ArrayEnvState) -> ArrayEnvState:
+        inputs = self.sim_data
+        target_heights = state.info.get("target_heights")
+        if target_heights is None:
+            target_heights = np.full(self._num_envs, np.mean(self._cfg.target_height_range), dtype=np.float32)
+        # Observation: joint states + paddle position + target height (29D)
+        # Concatenate: DOF pos (13) + DOF vel (12) + paddle xyz (3) + target height (1)
+        obs = np.concatenate(
+            [inputs["dof_pos"], inputs["dof_vel"], inputs["paddle_pos"], target_heights[:, np.newaxis]], axis=-1
+        )
+        return state.replace(obs=obs.astype(np.float32))
+
+    def compute_transition(self, state: ArrayEnvState) -> ArrayEnvState:
+        """Update state with rewards and termination flags"""
+        self.sim_data.execute()
+        inputs = self.sim_data
+        num_envs = self._num_envs
 
         # Get bounce tracking and target heights from info
-        consecutive_bounces = state.info.get("consecutive_bounces", np.zeros(data.shape[0], dtype=np.int32))
-        ball_was_upward = state.info.get("ball_was_upward", np.zeros(data.shape[0], dtype=bool))
+        consecutive_bounces = state.info.get("consecutive_bounces", np.zeros(num_envs, dtype=np.int32))
+        ball_was_upward = state.info.get("ball_was_upward", np.zeros(num_envs, dtype=bool))
         # Use mean of target_height_range as fallback
         default_height = np.mean(self._cfg.target_height_range)
-        target_heights = state.info.get("target_heights", np.full(data.shape[0], default_height, dtype=np.float32))
+        target_heights = state.info.get("target_heights", np.full(num_envs, default_height, dtype=np.float32))
 
-        # Compute observation with target heights
-        obs = self._compute_observation(data, target_heights)
-
-        # Detect bounces and update consecutive bounce count
-        current_ball_z = obs[:, 8]  # Ball z position
-        current_ball_vz = obs[:, 21]  # Ball z velocity
+        # Detect bounces and update consecutive bounce count.
+        # The ball's free joint contributes (x, y, z) at dof 6:9.
+        current_ball_z = inputs["dof_pos"][:, 8]  # Ball z position
+        current_ball_vz = inputs["dof_vel"][:, 8]  # Ball z velocity
 
         # Detect bounces: ball moving upward after being near paddle height
         near_paddle = (current_ball_z < 0.4) & (current_ball_z > 0.15)
@@ -515,23 +531,19 @@ class BounceBallEnv(NpEnv):
         if max_current > state.info["max_consecutive_bounces"]:
             state.info["max_consecutive_bounces"] = max_current
 
-        # For simplicity, use raw observation without normalization for now
-        # Could add proper normalization later
-        normalized_obs = obs
-
-        # Compute reward and termination
+        # Compute reward and termination from simulator quantities
         reward, reward_details = self._compute_reward(
-            obs,
-            data,
+            inputs["dof_pos"],
+            inputs["dof_vel"],
+            inputs["paddle_pos"],
             consecutive_bounces,
             bounce_detected=bounce_detected,
             target_heights=target_heights,
             current_actions=state.info.get("current_actions"),
             last_actions=state.info.get("last_actions"),
         )
-        terminated = self._compute_terminated(obs, target_heights=target_heights)
+        terminated = self._compute_terminated(inputs["dof_pos"], inputs["dof_vel"], target_heights=target_heights)
 
-        state.obs = normalized_obs
         state.reward = reward
         state.terminated = terminated
 
@@ -542,10 +554,10 @@ class BounceBallEnv(NpEnv):
 
         return state
 
-    def reset(self, data: mtx.SceneData) -> tuple:
+    def reset(self, env_ids: np.ndarray) -> dict:
         """Reset environment to initial state with randomized target heights"""
         cfg: BounceBallEnvCfg = self._cfg
-        num_reset = data.shape[0]
+        num_reset = len(env_ids)
 
         # Randomize target heights for the environments being reset
         if cfg.randomize_target_height:
@@ -562,52 +574,43 @@ class BounceBallEnv(NpEnv):
             cfg.reset_noise_scale,
             (num_reset, 6),  # Only 6 arm joints
         )
-        noise_vel = np.random.uniform(
+        arm_vel = np.random.uniform(
             -cfg.reset_noise_scale,
             cfg.reset_noise_scale,
-            (num_reset, self._num_dof_vel),
-        )
+            (num_reset, 6),
+        ).astype(np.float32)
 
-        # Reset simulation first to get proper DOF structure
-        data.reset(self._model)
+        arm_pos = np.tile(self._init_arm_qpos, (num_reset, 1)) + arm_noise_pos
+        ball_pos = self._ball_init_pos + np.random.uniform(-0.01, 0.01, (num_reset, 3))
 
-        # Get current DOF positions
-        current_dof_pos = data.dof_pos
-
-        # === Modify all DOF positions ===
-        # Set arm joint positions (first 6 DOFs)
-        current_dof_pos[:, :6] = np.tile(self._init_arm_qpos, (num_reset, 1)) + arm_noise_pos
-
-        # Set ball position in DOF (indices 6-8 for x, y, z positions)
-        ball_noise_pos = np.random.uniform(-0.01, 0.01, (num_reset, 3))
-        ball_pos = self._ball_init_pos + ball_noise_pos
-        current_dof_pos[:, 6:9] = ball_pos
-
-        # Apply all DOF position  changes
-        data.set_dof_pos(current_dof_pos, self._model)
-
-        # Get current DOF velocities
-        current_dof_vel = data.dof_vel
-        # === Modify all DOF velocities ===
-
-        # Set arm joint velocities (first 6 DOFs)
-        current_dof_vel[:, :6] = noise_vel[:, :6]
-
-        # Apply ball linear velocity in DOF
-        data.set_dof_vel(current_dof_vel)
+        self._arm_reset_position[env_ids] = np.asarray(arm_pos, dtype=np.float32)
+        self._arm_reset_velocity[env_ids] = arm_vel
+        self._ball_reset_position[env_ids] = np.asarray(ball_pos, dtype=np.float32)
+        self._ball_reset_rotation[env_ids] = [0.0, 0.0, 0.0, 1.0]
+        self._ball_reset_linear_velocity[env_ids] = 0.0
+        self._ball_reset_angular_velocity[env_ids] = 0.0
+        self._reset_program.execute(env_ids)
 
         # Update target height marker position (thin cylinder disc)
         # Marker center aligns with ball top: marker_z = target_height + ball_radius
         target_marker_poses = np.tile(self._target_marker_base_pose, (num_reset, 1))
         target_marker_poses[:, 2] = new_target_heights + self._ball_radius  # Set z position
 
-        self._target_marker_body.mocap.set_pose(data, target_marker_poses)
+        self._marker_writes.buffer("height")[env_ids, 0] = np.ascontiguousarray(target_marker_poses, dtype=np.float32)
 
         # Update paddle home marker position
         paddle_home_marker_poses = np.tile(self._paddle_home_marker_pose, (num_reset, 1))
 
         # Set paddle home marker mocap body pose
-        self._paddle_home_marker_body.mocap.set_pose(data, paddle_home_marker_poses)
+        self._marker_writes.buffer("paddle")[env_ids, 0] = np.ascontiguousarray(
+            paddle_home_marker_poses, dtype=np.float32
+        )
+        # Both markers go to the backend in one crossing.
+        self._marker_writes.execute(env_ids)
+
+        # Refresh cached reads for the reset rows so the follow-up
+        # compute_observation (which never executes) sees post-reset state.
+        self.sim_data.execute(np.asarray(env_ids, dtype=np.int64))
 
         # Initialize info dict with bounce tracking variables
         info = {
@@ -619,8 +622,4 @@ class BounceBallEnv(NpEnv):
             "last_actions": np.zeros((num_reset, 6), dtype=np.float32),
         }
 
-        # Compute initial observation with target heights
-        obs = self._compute_observation(data, new_target_heights)
-        normalized_obs = obs  # No normalization for now
-
-        return normalized_obs, info
+        return info

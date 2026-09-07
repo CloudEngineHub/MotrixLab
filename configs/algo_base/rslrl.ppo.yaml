@@ -1,0 +1,88 @@
+# Source-of-truth base values for the rslrl.ppo provider.
+# Framework-neutral runtime settings live in the task recipe root.
+defaults:
+  # Load the structured RslrlCfg schema registered by the RSLRL provider.
+  - _rslrl_ppo_schema
+  # Apply the values in this file after the schema.
+  - _self_
+# Environment steps collected by each parallel environment before one PPO update.
+num_steps_per_env: 24
+# Number of rollout-and-update iterations executed by the RSLRL runner.
+max_iterations: 10000
+# Map each model role to the environment observation groups it receives.
+obs_groups:
+  # Observation groups concatenated and passed to the actor.
+  actor:
+    - policy
+  # Observation groups concatenated and passed to the critic.
+  critic:
+    - policy
+actor:
+  # RSLRL model class used to build the actor network.
+  class_name: MLPModel
+  # Number of units in each actor hidden layer.
+  hidden_dims:
+    - 256
+    - 128
+    - 64
+  # Activation function used by the actor hidden layers.
+  activation: elu
+  # Normalize actor observations using running statistics.
+  obs_normalization: true
+  # Produce a stochastic action distribution rather than deterministic outputs.
+  stochastic: true
+  # Initial standard deviation of the action distribution.
+  init_noise_std: 1.0
+  # Parameterize action standard deviation directly (scalar) or in logarithmic space (log).
+  noise_std_type: scalar
+  # Predict action standard deviation from observations instead of learning a global parameter.
+  state_dependent_std: false
+critic:
+  # RSLRL model class used to build the critic network.
+  class_name: MLPModel
+  # Number of units in each critic hidden layer.
+  hidden_dims:
+    - 256
+    - 128
+    - 64
+  # Activation function used by the critic hidden layers.
+  activation: elu
+  # Normalize critic observations using running statistics.
+  obs_normalization: true
+  # Keep the critic deterministic so it outputs one state-value estimate.
+  stochastic: false
+algorithm:
+  # RSLRL algorithm class instantiated by the runner.
+  class_name: PPO
+  # Optimizer name resolved by RSLRL.
+  optimizer: adam
+  # Optimizer learning rate.
+  learning_rate: 0.0003
+  # Optimization passes over each collected rollout.
+  num_learning_epochs: 5
+  # Number of mini-batches used to split each rollout during optimization.
+  num_mini_batches: 4
+  # Learning-rate schedule; adaptive adjusts the rate using desired_kl.
+  schedule: adaptive
+  # Value-function loss coefficient.
+  value_loss_coef: 1.0
+  # PPO probability-ratio clipping range.
+  clip_param: 0.2
+  # Use the clipped PPO value-function objective.
+  use_clipped_value_loss: true
+  # Target KL divergence used by the adaptive learning-rate schedule.
+  desired_kl: 0.008
+  # Entropy bonus coefficient used to encourage exploration.
+  entropy_coef: 0.01
+  # Reward discount factor gamma.
+  gamma: 0.99
+  # Generalized Advantage Estimation lambda.
+  lam: 0.95
+  # Maximum gradient norm used for gradient clipping.
+  max_grad_norm: 1.0
+  # Normalize advantages independently inside each mini-batch instead of once per rollout.
+  normalize_advantage_per_mini_batch: false
+  # Optional Random Network Distillation configuration; null disables intrinsic RND rewards.
+  rnd_cfg: null
+  # Optional symmetry augmentation and mirror-loss configuration; null disables it.
+  symmetry_cfg: null

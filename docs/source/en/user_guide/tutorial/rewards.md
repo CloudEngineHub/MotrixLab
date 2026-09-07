@@ -4,11 +4,11 @@ The reward function tells the agent what behaviors are desired and is a core par
 
 ## Position of Reward Function in Training Loop
 
-In MotrixLab's NpEnv, reward calculation occurs in the `update_state` phase of the `step` function:
+In MotrixLab's `DirectEnv` workflow, reward calculation occurs in the `compute_transition` phase of the `step` function:
 
 ```python
-# Execution flow of NpEnv.step()
-def step(self, actions: np.ndarray) -> NpEnvState:
+# Execution flow of DirectEnv.step()
+def step(self, actions: np.ndarray) -> ArrayEnvState:
     # 1. Preparation phase: Clear rewards and state
     self._prev_physics_step()  # reward = 0.0, terminated = False, truncated = False
 
@@ -18,17 +18,18 @@ def step(self, actions: np.ndarray) -> NpEnvState:
     # 3. Physics simulation
     self.physics_step()  # Execute physics simulation
 
-    # 4. Update state ← Reward function is calculated here
-    self._state = self.update_state(self._state)  # Calculate rewards and observations
+    # 4. Compute transition ← Reward function is calculated here
+    self._state = self.compute_transition(self._state)
 
     # 5. Post-processing
     self._update_truncate()  # Check time truncation
     self._reset_done_envs()  # Reset completed environments
+    self._state = self.compute_observation(self._state)  # Compute post-reset observations
 
     return self._state
 ```
 
-You need to implement reward calculation logic in the `update_state` method of subclasses. For specific reward function design ideas, please refer to the training examples.
+You need to implement reward calculation logic in the `compute_transition` method of subclasses. For specific reward function design ideas, please refer to the training examples.
 
 ### Reward Component Design Principles
 
@@ -47,4 +48,4 @@ This approach makes reward functions modular, facilitating debugging and adjustm
 4. **Avoid Reward Hacking**: Check if agents can obtain high rewards through unintended means
 5. **Debug-Friendly**: Output reward decomposition information during development for optimization
 
-By correctly implementing reward calculation in the `update_state` method, you can design effective learning signals for various robot tasks.
+By correctly implementing reward calculation in the `compute_transition` method, you can design effective learning signals for various robot tasks.

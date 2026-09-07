@@ -1,0 +1,32 @@
+# @package _global_
+# Task bounce_ball: skrl.ppo shared training recipe.
+defaults:
+  - /algo_base@algo: skrl.ppo
+  - _self_
+task:
+  env: bounce_ball
+  rllib: skrl
+  algo: ppo
+  train_backend: null
+num_envs: 2048
+play_num_envs: 16
+seed: 42
+algo:
+  models:
+    policy:
+      hiddens:
+        - 64
+        - 64
+        - 64
+    value:
+      hiddens:
+        - 64
+        - 64
+        - 64
+  agent:
+    rollouts: 128
+    learning_epochs: 15
+    mini_batches: 16
+    learning_rate: 0.0002
+  trainer:
+    timesteps: 45000

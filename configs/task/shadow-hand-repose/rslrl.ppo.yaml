@@ -1,0 +1,31 @@
+# @package _global_
+# Task shadow-hand-repose: rslrl.ppo shared training recipe.
+defaults:
+  - /algo_base@algo: rslrl.ppo
+  - _self_
+task:
+  env: shadow-hand-repose
+  rllib: rslrl
+  algo: ppo
+  train_backend: null
+num_envs: 8192
+play_num_envs: 16
+seed: 42
+algo:
+  num_steps_per_env: 16
+  max_iterations: 1500
+  actor:
+    hidden_dims:
+      - 512
+      - 512
+      - 256
+      - 128
+  critic:
+    hidden_dims:
+      - 512
+      - 512
+      - 256
+      - 128
+  algorithm:
+    learning_rate: 0.0005
+    entropy_coef: 0.0

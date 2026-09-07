@@ -26,10 +26,10 @@ This document will guide you through the installation and configuration of Motri
     ```{note}
     Features supported on each platform:
 
-    | Operating System | CPU Simulation | Interactive Viewer | GPU Simulation |
-    | :--------------: | :------------: | :----------------: | :------------: |
-    |      Linux       |       ✅       |         ✅          |    🛠️ In Development    |
-    |     Windows      |       ✅       |         ✅          |    🛠️ In Development    |
+    | Operating System | CPU Simulation | Interactive Viewer |
+    | :--------------: | :------------: | :----------------: |
+    |      Linux       |       ✅       |         ✅          |
+    |     Windows      |       ✅       |         ✅          |
     ```
 
 ## Installation Steps
@@ -47,7 +47,7 @@ Execute the following command to install complete dependencies:
 
 ```bash
 # Install all dependencies
-uv sync --all-packages --all-extras
+uv sync --all-packages --all-groups --all-extras
 ```
 
 If you only need specific training frameworks, you can selectively install to reduce dependency size:
@@ -62,4 +62,19 @@ uv sync --all-packages --extra skrl-torch
 
 # Install RSLRL (PyTorch only)
 uv sync --all-packages --extra rslrl
+```
+
+## Package Boundaries
+
+-   `motrix-env-core` provides the environment framework without built-in tasks or assets.
+-   `motrix-envs` depends on the core package and contains all built-in environments, robot models, and task data.
+-   `motrix-rl` depends on the core package and does not require the built-in environments.
+
+In an external project, install only `motrix-env-core` when implementing custom environments. Install
+`motrix-envs` when using the built-in tasks. Importing `motrix_envs` performs built-in environment registration.
+
+```python
+from motrix_envs import registry
+from motrix_env_core.direct.env import DirectEnv
+from motrix_envs.core import EnvCfg, SceneCfg, configclass
 ```

@@ -1,28 +1,18 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
 
 import os
-from dataclasses import dataclass, field
 
-from motrix_envs import registry
-from motrix_envs.base import EnvCfg
+from motrix_env_core import registry
+from motrix_env_core.base import SimCfg
+from motrix_env_core.config import configclass
+from motrix_env_core.config.scene import SceneCfg
+from motrix_env_core.direct.env import DirectEnvCfg
 
 model_file = os.path.dirname(__file__) + "/xmls/scene.xml"
 
 
-@dataclass
+@configclass
 class NoiseConfig:
     level: float = 1.0
     scale_joint_angle: float = 0.03
@@ -32,14 +22,14 @@ class NoiseConfig:
     scale_linvel: float = 0.1
 
 
-@dataclass
+@configclass
 class ControlConfig:
     # stiffness[N*m/rad] uses kp parameter from XML, recorded for reference only
     # damping[N*m*s/rad] uses kv parameter from XML, recorded for reference only
     action_scale = 0.06  # action scale
 
 
-@dataclass
+@configclass
 class InitState:
     # the initial position of the robot in the world frame
     pos = [0.0, 0.0, 0.5]  # Z-axis height matches the initial height of base in XML
@@ -64,7 +54,7 @@ class InitState:
     }
 
 
-@dataclass
+@configclass
 class Commands:
     # offset range of target position relative to robot initial position
     # [dx_min, dy_min, yaw_min, dx_max, dy_max, yaw_max]
@@ -73,7 +63,7 @@ class Commands:
     pose_command_range = [-5.0, -5.0, -3.14, 5.0, 5.0, 3.14]
 
 
-@dataclass
+@configclass
 class Normalization:
     lin_vel = 2.0
     ang_vel = 0.25
@@ -81,7 +71,7 @@ class Normalization:
     dof_vel = 0.05
 
 
-@dataclass
+@configclass
 class Asset:
     body_name = "base"
     foot_names = ["LF_FOOT", "RF_FOOT", "LH_FOOT", "RH_FOOT"]
@@ -89,40 +79,43 @@ class Asset:
     ground_name = "ground"
 
 
-@dataclass
+@configclass
 class Sensor:
     base_linvel = "base_linvel"
     base_gyro = "base_gyro"
 
 
-@dataclass
+@configclass
 class RewardConfig:
-    scales: dict[str, float] = field(
-        default_factory=lambda: {
-            "termination": -400.0,
-            "position_tracking": 0.5,
-            "fine_position_tracking": 0.5,
-            "orientation": -0.2,
-        }
-    )
+    scales: dict[str, float] = {
+        "termination": -400.0,
+        "position_tracking": 0.5,
+        "fine_position_tracking": 0.5,
+        "orientation": -0.2,
+    }
 
 
 @registry.envcfg("anymal_c_navigation_flat")
-@dataclass
-class AnymalCEnvCfg(EnvCfg):
-    model_file: str = model_file
+@configclass
+class AnymalCEnvCfg(DirectEnvCfg):
+    """Navigate ANYmal-C toward a target on flat ground.
+
+    zh_CN: 控制 ANYmal-C 在平地上朝目标位置导航。
+    """
+
+    scene: SceneCfg = SceneCfg(file=model_file)
     reset_noise_scale: float = 0.01
     max_episode_seconds: float = 7.0
-    sim_dt: float = 0.01
+    sim: SimCfg = SimCfg(dt=0.01)
     ctrl_dt: float = 0.01
     reset_yaw_scale: float = 0.1
     max_dof_vel: float = 100.0  # maximum joint velocity threshold, greater tolerance during early training
 
-    noise_config: NoiseConfig = field(default_factory=NoiseConfig)
-    control_config: ControlConfig = field(default_factory=ControlConfig)
-    reward_config: RewardConfig = field(default_factory=RewardConfig)
-    init_state: InitState = field(default_factory=InitState)
-    commands: Commands = field(default_factory=Commands)
-    normalization: Normalization = field(default_factory=Normalization)
-    asset: Asset = field(default_factory=Asset)
-    sensor: Sensor = field(default_factory=Sensor)
+    noise_config: NoiseConfig = NoiseConfig()
+    control_config: ControlConfig = ControlConfig()
+    reward_config: RewardConfig = RewardConfig()
+    init_state: InitState = InitState()
+    commands: Commands = Commands()
+    normalization: Normalization = Normalization()
+    asset: Asset = Asset()
+    sensor: Sensor = Sensor()

@@ -1,30 +1,20 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
 
 import os
-from dataclasses import dataclass, field
 
 import numpy as np
 
-from motrix_envs import registry
-from motrix_envs.base import EnvCfg
+from motrix_env_core import registry
+from motrix_env_core.base import SimCfg
+from motrix_env_core.config import configclass
+from motrix_env_core.config.scene import SceneCfg
+from motrix_env_core.direct.env import DirectEnvCfg
 
 model_file = os.path.dirname(__file__) + "/xmls/mjx_scene.xml"
 
 
-@dataclass
+@configclass
 class InitState:
     # robot joint names and default positions [rad]
     joint_names = [
@@ -42,7 +32,7 @@ class InitState:
     joint_pos_reset_noise_scale = 0.125
 
 
-@dataclass
+@configclass
 class ControlConfig:
     # Position control
     # The actuator defined in xml file is <position ..../>
@@ -53,31 +43,36 @@ class ControlConfig:
     max_pos = [2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, np.pi / 2, 0.04]
 
 
-@dataclass
+@configclass
 class Commands:
     target_pos_x = [0.4, 0.6]
     target_pos_y = [-0.25, 0.25]
     target_pos_z = [0.25, 0.5]
 
 
-@dataclass
+@configclass
 class Asset:
     ground_name = "table"
     terminate_after_contacts_on = ["left_finger_pad", "left_finger_pad"]
 
 
 @registry.envcfg("franka-lift-cube")
-@dataclass
-class FrankaLiftCubeEnvCfg(EnvCfg):
+@configclass
+class FrankaLiftCubeEnvCfg(DirectEnvCfg):
+    """Control a Franka arm to grasp and lift a cube.
+
+    zh_CN: 控制 Franka 机械臂抓取并抬升立方体。
+    """
+
     render_spacing: float = 2.0
-    model_file: str = model_file
+    scene: SceneCfg = SceneCfg(file=model_file)
     max_episode_seconds: float = 2.5
-    sim_dt: float = 0.01
+    sim: SimCfg = SimCfg(dt=0.01)
     move_speed: float = 1.0
     ctrl_dt: float = 0.01
     reset_noise_scale = 0.05
 
-    init_state: InitState = field(default_factory=InitState)
-    control_config: ControlConfig = field(default_factory=ControlConfig)
-    command_config: Commands = field(default_factory=Commands)
-    asset: Asset = field(default_factory=Asset)
+    init_state: InitState = InitState()
+    control_config: ControlConfig = ControlConfig()
+    command_config: Commands = Commands()
+    asset: Asset = Asset()

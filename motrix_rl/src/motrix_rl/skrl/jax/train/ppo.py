@@ -1,17 +1,5 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
 
 from typing import Any
 
@@ -19,18 +7,18 @@ import flax.linen as nn
 import jax.numpy as jnp
 import numpy as np
 from skrl.agents.jax.ppo import PPO as BasePPO
-from skrl.envs.jax import Wrapper
+from skrl.envs.wrappers.jax import Wrapper
 from skrl.models.jax import DeterministicMixin, GaussianMixin, Model
 from skrl.resources.preprocessors.jax import RunningStandardScaler
-from skrl.resources.schedulers.jax import KLAdaptiveRL
+from skrl.resources.schedulers.jax import KLAdaptiveLR
 from skrl.trainers.jax import SequentialTrainer
 from skrl.utils import set_seed
 
-from motrix_envs import registry as env_registry
-from motrix_rl import registry, utils
-from motrix_rl.skrl import get_log_dir
+from motrix_env_core import registry as env_registry
+from motrix_env_core.renderer import RenderConfig
 from motrix_rl.skrl.config import SkrlCfg, SkrlMemoryCfg
 from motrix_rl.skrl.jax import wrap_env
+from motrix_rl.skrl.ppo import SkrlPpoTrainerBase, ppo_memory_size
 
 
 def _instantiate_memory(memory_cfg: SkrlMemoryCfg, memory_size: int, num_envs: int, device) -> Any:
@@ -63,65 +51,16 @@ def _instantiate_memory(memory_cfg: SkrlMemoryCfg, memory_size: int, num_envs: i
     return MemoryClass(memory_size=memory_size, num_envs=num_envs, device=device)
 
 
-def _add_runtime_config(
-    cfg: dict,
-    env: Wrapper,
-    log_dir: str = None,
-) -> dict:
-    """Add runtime-specific configuration to the base agent config.
-
-    Args:
-        cfg: Base configuration from agent.to_dict() (will be modified in-place)
-        env: SKRL environment wrapper
-        log_dir: Optional logging directory path
-
-    Returns:
-        The same cfg dict with runtime values added (modified in-place for convenience)
-    """
-    # Convert learning_rate_scheduler from string to actual class (if configured)
-    if cfg.get("learning_rate_scheduler") == "KLAdaptiveLR":
-        cfg["learning_rate_scheduler"] = KLAdaptiveRL
-    # Otherwise keep as-is (None or other scheduler type)
-
-    # Add rewards shaper (conditional based on rewards_shaper_scale in cfg)
-    if cfg.get("rewards_shaper_scale", 1.0) != 1.0:
-        cfg["rewards_shaper"] = lambda reward, timestep, timesteps: reward * cfg["rewards_shaper_scale"]
-    else:
-        cfg["rewards_shaper"] = None
-
-    # Add preprocessors (require runtime env values)
-    cfg["state_preprocessor"] = RunningStandardScaler
-    cfg["state_preprocessor_kwargs"] = {
-        "size": env.observation_space,
-        "device": env.device,
-    }
-    cfg["value_preprocessor"] = RunningStandardScaler
-    cfg["value_preprocessor_kwargs"] = {"size": 1, "device": env.device}
-
-    # Add experiment configuration (handle -1 -> "auto" conversion)
-    if log_dir:
-        cfg["experiment"]["write_interval"] = (
-            "auto" if cfg["experiment"]["write_interval"] == -1 else cfg["experiment"]["write_interval"]
-        )
-        cfg["experiment"]["checkpoint_interval"] = (
-            "auto" if cfg["experiment"]["checkpoint_interval"] == -1 else cfg["experiment"]["checkpoint_interval"]
-        )
-        cfg["experiment"]["directory"] = log_dir
-    else:
-        cfg["experiment"]["write_interval"] = 0
-        cfg["experiment"]["checkpoint_interval"] = 0
-
-    return cfg
-
-
 class PPO(BasePPO):
     _total_custom_rewards: dict[str, np.ndarray] = {}
 
     def record_transition(
         self,
+        observations,
         states,
         actions,
         rewards,
+        next_observations,
         next_states,
         terminated,
         truncated,
@@ -130,15 +69,17 @@ class PPO(BasePPO):
         timesteps,
     ) -> None:
         super().record_transition(
-            states,
-            actions,
-            rewards,
-            next_states,
-            terminated,
-            truncated,
-            infos,
-            timestep,
-            timesteps,
+            observations=observations,
+            states=states,
+            actions=actions,
+            rewards=rewards,
+            next_observations=next_observations,
+            next_states=next_states,
+            terminated=terminated,
+            truncated=truncated,
+            infos=infos,
+            timestep=timestep,
+            timesteps=timesteps,
         )
 
         if "Reward" in infos:
@@ -172,77 +113,30 @@ class PPO(BasePPO):
                 self.tracking_data[f"metrics / {key} (mean)"].append(jnp.mean(value))
 
 
-class Trainer:
+class Trainer(SkrlPpoTrainerBase):
+    train_backend = "jax"
+    checkpoint_format = "pickle"
+    remove_mixed_precision = True
+    scheduler_cls = KLAdaptiveLR
+    scaler_cls = RunningStandardScaler
+    trainer_cls = SequentialTrainer
+
     _trainer: SequentialTrainer
-    _env_name: str
-    _sim_backend: str
-    _rlcfg: SkrlCfg
-    _enable_render: bool
 
-    def __init__(
-        self,
-        env_name: str,
-        sim_backend: str = None,
-        enable_render: bool = False,
-        cfg_override: dict = None,
-    ) -> None:
-        rlcfg = registry.default_rl_cfg(env_name, "skrl", backend="jax")
-        if cfg_override is not None:
-            rlcfg = utils.cfg_override(rlcfg, cfg_override)
-        self._rlcfg = rlcfg
-        self._env_name = env_name
-        self._sim_backend = sim_backend
-        self._enable_render = enable_render
+    def _make_env(self, num_envs: int, mode: str = "train"):
+        return env_registry.make(
+            self._env_name,
+            num_envs=num_envs,
+            mode=mode,
+            sim=self._sim,
+            seed=self._context.seed,
+        )
 
-    def train(self) -> None:
-        """
-        Start training the agent.
-        """
-        rlcfg = self._rlcfg
-        env = env_registry.make(self._env_name, sim_backend=self._sim_backend, num_envs=rlcfg.num_envs)
+    def _wrap_env(self, env, render: RenderConfig | None) -> Wrapper:
+        return wrap_env(env, render)
 
-        set_seed(rlcfg.runner.seed)
-        skrl_env = wrap_env(env, self._enable_render)
-        models = self._make_model(skrl_env, rlcfg)
-        # Get base configuration from config object
-        ppo_cfg = rlcfg.runner.agent.to_dict()
-        # Add runtime-specific configuration
-        _add_runtime_config(ppo_cfg, skrl_env, log_dir=get_log_dir(self._env_name, rllib="skrl", agent_name="PPO"))
-        agent = self._make_agent(models, skrl_env, ppo_cfg, rlcfg.runner.memory)
-        cfg_trainer = {
-            "timesteps": rlcfg.runner.trainer.timesteps,
-            "headless": not self._enable_render,
-        }
-        trainer = SequentialTrainer(cfg=cfg_trainer, env=skrl_env, agents=agent)
-        trainer.train()
-
-    def play(self, policy: str) -> None:
-        import time
-
-        rlcfg = self._rlcfg
-        env = env_registry.make(self._env_name, sim_backend=self._sim_backend, num_envs=rlcfg.play_num_envs)
-
-        set_seed(rlcfg.runner.seed)
-        env = wrap_env(env, self._enable_render)
-        models = self._make_model(env, rlcfg)
-        # Get base configuration from config object
-        ppo_cfg = rlcfg.runner.agent.to_dict()
-        # Add runtime-specific configuration
-        _add_runtime_config(ppo_cfg, env)
-        agent = self._make_agent(models, env, ppo_cfg, rlcfg.runner.memory)
-        agent.load(policy)
-        obs, _ = env.reset()
-
-        fps = 60
-        while True:
-            t = time.time()
-            outputs = agent.act(obs, timestep=0, timesteps=0)
-            actions = outputs[-1].get("mean_actions", outputs[0])
-            obs, _, _, _, _ = env.step(actions)
-            env.render()
-            delta_time = time.time() - t
-            if delta_time < 1.0 / fps:
-                time.sleep(1.0 / fps - delta_time)
+    def _set_seed(self, seed: int | None) -> None:
+        set_seed(seed)
 
     def _make_model(self, env: Wrapper, rlcfg: SkrlCfg) -> dict[str, Model]:
         _activation_fn = {
@@ -254,8 +148,9 @@ class Trainer:
             "selu": nn.selu,
         }
 
-        policy_cfg = rlcfg.runner.models.policy
-        value_cfg = rlcfg.runner.models.value
+        policy_cfg = rlcfg.models.policy
+        value_cfg = rlcfg.models.value
+        separate = rlcfg.models.separate
 
         def resolve_activations(activation_names: list[str], hiddens: list[int]) -> list:
             if len(activation_names) == 1:
@@ -270,65 +165,138 @@ class Trainer:
         policy_acts = resolve_activations(policy_cfg.hidden_activation, policy_cfg.hiddens)
         value_acts = resolve_activations(value_cfg.hidden_activation, value_cfg.hiddens)
 
-        class Policy(GaussianMixin, Model):
-            def __init__(self, observation_space, action_space, device=None, **kwargs):
-                Model.__init__(self, observation_space, action_space, device, **kwargs)
-                GaussianMixin.__init__(
-                    self,
-                    policy_cfg.clip_actions,
-                    policy_cfg.clip_log_std,
-                    policy_cfg.min_log_std,
-                    policy_cfg.max_log_std,
-                    policy_cfg.reduction,
-                )
-
-            @nn.compact
-            def __call__(self, inputs, role):
-                x = inputs["states"]
-                for size, act in zip(policy_cfg.hiddens, policy_acts):
-                    x = act(nn.Dense(size)(x))
-                x = nn.Dense(self.num_actions)(x)
-                log_std = self.param("log_std", lambda _: jnp.full(self.num_actions, float(policy_cfg.initial_log_std)))
-                return x, log_std, {}
-
-        class Value(DeterministicMixin, Model):
-            def __init__(self, observation_space, action_space, device=None, **kwargs):
-                Model.__init__(self, observation_space, action_space, device, **kwargs)
-                DeterministicMixin.__init__(self, value_cfg.clip_actions)
-
-            @nn.compact
-            def __call__(self, inputs, role):
-                x = inputs["states"]
-                for size, act in zip(value_cfg.hiddens, value_acts):
-                    x = act(nn.Dense(size)(x))
-                x = nn.Dense(1)(x)
-                return x, {}
-
         models = {}
-        models["policy"] = Policy(
-            observation_space=env.observation_space,
-            action_space=env.action_space,
-            device=env.device,
-        )
-        models["value"] = Value(
-            observation_space=env.observation_space,
-            action_space=env.action_space,
-            device=env.device,
-        )
 
-        for role, model in models.items():
-            model.init_state_dict(role)
+        if separate:
+
+            class Policy(GaussianMixin, Model):
+                def __init__(self, observation_space, state_space, action_space, device=None, **kwargs):
+                    Model.__init__(
+                        self,
+                        observation_space=observation_space,
+                        state_space=state_space,
+                        action_space=action_space,
+                        device=device,
+                        **kwargs,
+                    )
+                    GaussianMixin.__init__(
+                        self,
+                        clip_actions=policy_cfg.clip_actions,
+                        clip_log_std=policy_cfg.clip_log_std,
+                        min_log_std=policy_cfg.min_log_std,
+                        max_log_std=policy_cfg.max_log_std,
+                        reduction=policy_cfg.reduction,
+                    )
+
+                @nn.compact
+                def __call__(self, inputs, role):
+                    x = inputs["observations"]
+                    for size, act in zip(policy_cfg.hiddens, policy_acts):
+                        x = act(nn.Dense(size)(x))
+                    x = nn.Dense(self.num_actions)(x)
+                    log_std = self.param(
+                        "log_std", lambda _: jnp.full(self.num_actions, float(policy_cfg.initial_log_std))
+                    )
+                    return x, {"log_std": log_std}
+
+            class Value(DeterministicMixin, Model):
+                def __init__(self, observation_space, state_space, action_space, device=None, **kwargs):
+                    Model.__init__(
+                        self,
+                        observation_space=observation_space,
+                        state_space=state_space,
+                        action_space=action_space,
+                        device=device,
+                        **kwargs,
+                    )
+                    DeterministicMixin.__init__(self, clip_actions=value_cfg.clip_actions)
+
+                @nn.compact
+                def __call__(self, inputs, role):
+                    x = inputs["states"]
+                    for size, act in zip(value_cfg.hiddens, value_acts):
+                        x = act(nn.Dense(size)(x))
+                    x = nn.Dense(1)(x)
+                    return x, {}
+
+            models["policy"] = Policy(
+                observation_space=env.observation_space,
+                state_space=env.state_space,
+                action_space=env.action_space,
+                device=env.device,
+            )
+            models["value"] = Value(
+                observation_space=env.observation_space,
+                state_space=env.state_space,
+                action_space=env.action_space,
+                device=env.device,
+            )
+
+            for role, model in models.items():
+                model.init_state_dict(role=role)
+        else:
+            if env.observation_space != env.state_space:
+                raise ValueError("Shared SKRL models require observation_space and state_space to match")
+            if value_cfg.clip_actions:
+                raise ValueError("JAX shared SKRL value models do not support value.clip_actions=True")
+
+            class Shared(GaussianMixin, Model):
+                def __init__(self, observation_space, state_space, action_space, device=None, **kwargs):
+                    Model.__init__(
+                        self,
+                        observation_space=observation_space,
+                        state_space=state_space,
+                        action_space=action_space,
+                        device=device,
+                        **kwargs,
+                    )
+                    GaussianMixin.__init__(
+                        self,
+                        clip_actions=policy_cfg.clip_actions,
+                        clip_log_std=policy_cfg.clip_log_std,
+                        min_log_std=policy_cfg.min_log_std,
+                        max_log_std=policy_cfg.max_log_std,
+                        reduction=policy_cfg.reduction,
+                    )
+
+                def act(self, inputs, role="", params=None):
+                    if role == "policy":
+                        return GaussianMixin.act(self, inputs, role=role, params=params)
+                    if role == "value":
+                        return self.apply(self.state_dict.params if params is None else params, inputs, role)
+                    raise ValueError(f"Unsupported SKRL model role: {role}")
+
+                @nn.compact
+                def __call__(self, inputs, role):
+                    x = inputs["observations"] if role == "policy" else inputs["states"]
+                    for index, (size, act) in enumerate(zip(policy_cfg.hiddens, policy_acts)):
+                        x = act(nn.Dense(size, name=f"shared_{index}")(x))
+                    mean = nn.Dense(self.num_actions, name="mean_layer")(x)
+                    value = nn.Dense(1, name="value_layer")(x)
+                    log_std = self.param(
+                        "log_std", lambda _: jnp.full(self.num_actions, float(policy_cfg.initial_log_std))
+                    )
+                    if role == "policy":
+                        return mean, {"log_std": log_std}
+                    if role == "value":
+                        return value, {}
+                    raise ValueError(f"Unsupported SKRL model role: {role}")
+
+            models["policy"] = Shared(
+                observation_space=env.observation_space,
+                state_space=env.state_space,
+                action_space=env.action_space,
+                device=env.device,
+            )
+            models["policy"].init_state_dict(role="policy")
+            models["value"] = models["policy"]
 
         return models
 
     def _make_agent(
         self, models: dict[str, Model], env: Wrapper, ppo_cfg: dict[str, Any], memory_cfg: SkrlMemoryCfg
     ) -> PPO:
-        # Use memory_size from SkrlMemoryCfg, fall back to rollouts if -1
-        memory_size = memory_cfg.memory_size
-        if memory_size == -1:
-            memory_size = ppo_cfg["rollouts"]
-
+        memory_size = ppo_memory_size(memory_cfg.memory_size, ppo_cfg)
         memory = _instantiate_memory(memory_cfg, memory_size, env.num_envs, env.device)
 
         agent = PPO(
@@ -336,6 +304,7 @@ class Trainer:
             memory=memory,
             cfg=ppo_cfg,
             observation_space=env.observation_space,
+            state_space=env.state_space,
             action_space=env.action_space,
             device=env.device,
         )
@@ -343,5 +312,5 @@ class Trainer:
 
 
 class Player:
-    def __init__(self, env_name: str, sim_backend: str = None) -> None:
+    def __init__(self, env_name: str) -> None:
         pass

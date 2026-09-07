@@ -1,0 +1,31 @@
+# @package _global_
+# Task dm-hopper-hop: skrl.ppo shared training recipe.
+defaults:
+  - /algo_base@algo: skrl.ppo
+  - _self_
+task:
+  env: dm-hopper-hop
+  rllib: skrl
+  algo: ppo
+  train_backend: null
+num_envs: 2048
+play_num_envs: 16
+seed: 42
+algo:
+  models:
+    value:
+      hiddens:
+        - 32
+        - 32
+        - 32
+    policy:
+      hiddens:
+        - 32
+        - 32
+        - 32
+  agent:
+    rollouts: 24
+    learning_rate: 0.0002
+    learning_epochs: 5
+  trainer:
+    timesteps: 20000

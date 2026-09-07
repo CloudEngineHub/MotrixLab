@@ -1,60 +1,75 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
 
 import gymnasium as gym
-import motrixsim as mtx
 import numpy as np
 
-from motrix_envs import registry
+from motrix_env_core import registry
+from motrix_env_core.array.env import ArrayEnvState
+from motrix_env_core.direct import reward
+from motrix_env_core.direct.env import DirectEnv
+from motrix_env_core.sim import (
+    ActuatorCtrlQuery,
+    BodyJointPositionLimitsQuery,
+    BodyJointPositionWrite,
+    DofPositionQuery,
+    DofVelocityQuery,
+    LinkPositionQuery,
+    SensorValuesQuery,
+)
+from motrix_env_core.sim.write import BodyJointVelocityWrite, CtrlTargetsWrite
 from motrix_envs.basic.hopper.cfg import HopperStandCfg
-from motrix_envs.np import reward
-from motrix_envs.np.env import NpEnv, NpEnvState
+
+_SIM_DATA_QUERIES = {
+    "dof_pos": DofPositionQuery(),
+    "dof_vel": DofVelocityQuery(),
+    "actuator_ctrls": ActuatorCtrlQuery(),
+    "torso_pos": LinkPositionQuery(link="torso"),
+    "foot_pos": LinkPositionQuery(link="foot"),
+    "torso_subtreelinvel": SensorValuesQuery(sensors=("torso_subtreelinvel",)),
+    "touch_toe": SensorValuesQuery(sensors=("touch_toe",)),
+    "touch_heel": SensorValuesQuery(sensors=("touch_heel",)),
+}
+_SIM_MODEL_QUERIES = {"joint_position_limits": BodyJointPositionLimitsQuery(body="torso")}
 
 
-@registry.env("dm-hopper-stand", "np")
-@registry.env("dm-hopper-hop", "np")
-class HopperEnv(NpEnv):
+@registry.env("dm-hopper-stand")
+@registry.env("dm-hopper-hop")
+class HopperEnv(DirectEnv):
     _observation_space: gym.spaces.Box
     _action_space: gym.spaces.Box
 
-    def __init__(self, cfg: HopperStandCfg, num_envs=1):
-        super().__init__(cfg, num_envs)
+    def __init__(self, cfg: HopperStandCfg, num_envs=1, backend: str | None = None):
+        super().__init__(cfg, num_envs, backend=backend)
+        self.model = self.sim.compile_model(_SIM_MODEL_QUERIES)
+        self.sim_data = self.sim.compile_reads(_SIM_DATA_QUERIES)
+        self._ctrl_writes = self.sim.write_compiler.compile({"ctrl": CtrlTargetsWrite()})
+        self._reset_program = self.sim.write_compiler.compile(
+            {"hopper_position": BodyJointPositionWrite("torso"), "hopper_velocity": BodyJointVelocityWrite("torso")},
+            reset=True,
+        )
+        self._reset_position = self._reset_program.buffer("hopper_position")
+        self._reset_velocity = self._reset_program.buffer("hopper_velocity")
         self._init_obs_space()
         self._init_action_space()
 
-        self._torso = self._model.get_link("torso")
-        self._foot = self._model.get_link("foot")
-
         self._stand_height = cfg.stand_height
         self._hop_speed = cfg.hop_speed
-        self._joint_limits = self._model.joint_limits
+        self._joint_pos_lower, self._joint_pos_upper = self.model.others["joint_position_limits"]
 
     def _init_obs_space(self):
-        model = self._model
         num = 0
-        num += model.num_dof_pos - 1
-        num += model.num_dof_vel
+        num += self.num_dof_pos - 1
+        num += self.num_dof_vel
         num += 2
         self._observation_space = gym.spaces.Box(-np.inf, np.inf, (num,), dtype=np.float32)
 
     def _init_action_space(self):
-        model = self._model
+        ctrl_ranges = np.asarray([spec.ctrl_range for spec in self.model.actuators], dtype=np.float32)
         self._action_space = gym.spaces.Box(
-            model.actuator_ctrl_limits[0],
-            model.actuator_ctrl_limits[1],
-            (model.num_actuators,),
+            ctrl_ranges[:, 0],
+            ctrl_ranges[:, 1],
+            (self.num_actuators,),
             dtype=np.float32,
         )
 
@@ -66,47 +81,51 @@ class HopperEnv(NpEnv):
     def action_space(self) -> gym.spaces.Box:
         return self._action_space
 
-    def apply_action(self, actions, state):
-        state.data.actuator_ctrls = actions
+    def apply_action(self, actions, state: ArrayEnvState):
+        ctrl = self._ctrl_writes.buffer("ctrl")
+        ctrl[:] = np.asarray(actions, dtype=np.float32)
+        self._ctrl_writes.execute()
         return state
 
-    def _get_obs(self, data: mtx.SceneData) -> np.ndarray:
-        qpos = data.dof_pos[:, 1:]
-        qvel = data.dof_vel
-        num_env = int(data.shape[0])
+    def compute_observation(self, state: ArrayEnvState) -> ArrayEnvState:
+        inputs = self.sim_data
+        qpos = inputs["dof_pos"][:, 1:]
+        qvel = inputs["dof_vel"]
+        num_env = qpos.shape[0]
 
-        toe = np.asarray(self._model.get_sensor_value("touch_toe", data)).reshape(num_env, -1)[:, 0]
-        heel = np.asarray(self._model.get_sensor_value("touch_heel", data)).reshape(num_env, -1)[:, 0]
+        toe = np.log1p(inputs["touch_toe"].reshape(num_env, -1)[:, 0])
+        heel = np.log1p(inputs["touch_heel"].reshape(num_env, -1)[:, 0])
 
-        toe = np.log1p(toe)
-        heel = np.log1p(heel)
         touch = np.stack([toe, heel], axis=-1)  # shape -> (num_env, 2)
-        return np.concatenate([qpos, qvel, touch], axis=-1)
+        obs = np.concatenate([qpos, qvel, touch], axis=-1)
+        return state.replace(obs=obs)
 
-    def update_state(self, state: NpEnvState) -> NpEnvState:
-        data = state.data
+    def compute_transition(self, state: ArrayEnvState) -> ArrayEnvState:
+        self.sim_data.execute()
+        inputs = self.sim_data
 
-        # === obs ===
-        obs = self._get_obs(data)
-
-        num_env = int(data.shape[0])
-        toe = np.asarray(self._model.get_sensor_value("touch_toe", data)).reshape(num_env, -1)[:, 0]
-        heel = np.asarray(self._model.get_sensor_value("touch_heel", data)).reshape(num_env, -1)[:, 0]
-
-        toe = np.log1p(toe)
-        heel = np.log1p(heel)
+        toe = np.log1p(inputs["touch_toe"][:, 0])
+        heel = np.log1p(inputs["touch_heel"][:, 0])
 
         # === physical values ===
-        torso_pos = self._torso.get_position(data)
-        foot_pos = self._foot.get_position(data)
+        torso_pos = inputs["torso_pos"]
+        foot_pos = inputs["foot_pos"]
         torso_height = torso_pos[:, 2] - foot_pos[:, 2]
 
-        torso_vel = self._model.get_sensor_value("torso_subtreelinvel", data)
+        torso_vel = inputs["torso_subtreelinvel"]
         speed = torso_vel[:, 0]
 
+        dof_pos = inputs["dof_pos"]
+        dof_vel = inputs["dof_vel"]
+
         # === terminated ===
-        over_speed = np.sum(np.square(data.dof_vel[:, 4:7]), axis=-1) > 1e8
-        terminated = np.isnan(obs).any(axis=-1)
+        over_speed = np.sum(np.square(dof_vel[:, 4:7]), axis=-1) > 1e8
+        terminated = (
+            np.isnan(dof_pos).any(axis=-1)
+            | np.isnan(dof_vel).any(axis=-1)
+            | np.isnan(inputs["touch_toe"][:, 0])
+            | np.isnan(inputs["touch_heel"][:, 0])
+        )
         terminated |= over_speed
 
         standing = reward.tolerance(
@@ -124,10 +143,10 @@ class HopperEnv(NpEnv):
                 sigmoid="linear",
             )
 
-            leg_vel = np.linalg.norm(data.dof_vel[:, 4:7], axis=-1)
+            leg_vel = np.linalg.norm(dof_vel[:, 4:7], axis=-1)
             leg_bonus = np.tanh(leg_vel * 0.3) * 0.2 * standing
 
-            knee_vel = data.dof_vel[:, 5]
+            knee_vel = dof_vel[:, 5]
             extend_reward = np.maximum(knee_vel, 0) * 0.2 * standing
 
             stand_condition = (torso_height > self._stand_height * 0.8).astype(np.float32)
@@ -152,7 +171,7 @@ class HopperEnv(NpEnv):
                 )
 
         else:
-            control_magnitude = np.linalg.norm(data.actuator_ctrls, axis=-1)
+            control_magnitude = np.linalg.norm(inputs["actuator_ctrls"], axis=-1)
             small_control = reward.tolerance(
                 control_magnitude,
                 bounds=(0, 1),
@@ -168,33 +187,33 @@ class HopperEnv(NpEnv):
         rwd[terminated] = 0.0
 
         return state.replace(
-            obs=obs,
             reward=rwd,
             terminated=terminated,
         )
 
-    def reset(self, data: mtx.SceneData):
-        data.reset(self._model)
-        num_env = data.shape[0]
+    def reset(self, env_ids: np.ndarray):
+        num_reset = len(env_ids)
 
-        dof_pos = np.zeros((num_env, self._model.num_dof_pos))
+        dof_pos = np.zeros((num_reset, self._reset_position.shape[1]))
 
         dof_pos[:, 2] = 0
 
-        if self._model.num_dof_pos > 3:
+        if self._reset_position.shape[1] > 3:
             dof_pos[:, 3:] = np.random.uniform(
-                low=self._joint_limits[0, 3:],
-                high=self._joint_limits[1, 3:],
-                size=(num_env, self._model.num_dof_pos - 3),
+                low=self._joint_pos_lower[3:],
+                high=self._joint_pos_upper[3:],
+                size=(num_reset, self._reset_position.shape[1] - 3),
             )
 
-        data.set_dof_pos(dof_pos, self._model)
-        self._model.forward_kinematic(data)
+        dof_vel = np.zeros((num_reset, self._reset_velocity.shape[1]), dtype=np.float32)
 
-        obs = self._get_obs(data)
+        self._reset_position[env_ids] = np.asarray(dof_pos, np.float32)
+        self._reset_velocity[env_ids] = dof_vel
+        self._reset_program.execute(env_ids)
+        self.sim_data.execute(np.asarray(env_ids, np.int64))
 
-        rewards = {"stand": np.zeros((num_env,))}
+        rewards = {"stand": np.zeros((num_reset,))}
         if self._hop_speed > 0.0:
-            rewards["hop"] = np.zeros((num_env,))
+            rewards["hop"] = np.zeros((num_reset,))
 
-        return obs, {"Reward": rewards}
+        return {"Reward": rewards}

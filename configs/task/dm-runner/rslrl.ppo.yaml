@@ -1,0 +1,19 @@
+# @package _global_
+# Task dm-runner: rslrl.ppo shared training recipe.
+defaults:
+  - /algo_base@algo: rslrl.ppo
+  - _self_
+task:
+  env: dm-runner
+  rllib: rslrl
+  algo: ppo
+  train_backend: null
+num_envs: 2048
+play_num_envs: 16
+seed: 42
+algo:
+  max_iterations: 833
+  algorithm:
+    learning_rate: 0.0002
+    num_learning_epochs: 2
+    num_mini_batches: 32

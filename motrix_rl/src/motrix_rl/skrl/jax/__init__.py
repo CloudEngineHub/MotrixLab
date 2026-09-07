@@ -1,29 +1,20 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
+
+from motrix_env_core.renderer import RenderConfig
 
 
-def _inherits_from(cls, base_class_name):
-    """Check if cls inherits from a class with the given base_class_name."""
-    return any(base.__name__ == base_class_name for base in cls.__mro__)
+def wrap_env(env, render: RenderConfig | None = None):
+    """Wrap the environment for SKRL JAX."""
+    from motrix_env_core.array.env import ArrayEnv
+    from motrix_env_motrixsim.torch_env import TorchEnv
 
+    if isinstance(env, TorchEnv):
+        from motrix_rl.skrl.jax.wrap_torch import SkrlTorchWrapper
 
-def wrap_env(env, enable_render: bool = False):
-    """Wrap the environment based on its type."""
-    if _inherits_from(env.__class__, "NpEnv"):
+        return SkrlTorchWrapper(env, render=render)
+    if isinstance(env, ArrayEnv):
         from motrix_rl.skrl.jax.wrap_np import SkrlNpWrapper
 
-        return SkrlNpWrapper(env, enable_render=enable_render)
-    else:
-        raise ValueError(f"Unsupported environment type: {env.__class__.__name__}")
+        return SkrlNpWrapper(env, render=render)
+    raise TypeError(f"SKRL JAX does not support environment type '{type(env).__name__}'.")

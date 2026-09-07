@@ -1,34 +1,60 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
 
 import os
-from dataclasses import dataclass
 
-from motrix_envs import registry
-from motrix_envs.base import EnvCfg
+from motrix_env_core import registry
+from motrix_env_core.base import SimCfg
+from motrix_env_core.config import configclass
+from motrix_env_core.config.scene import SceneCfg, SystemCameraCfg
+from motrix_env_core.direct.env import DirectEnvCfg
 
 bring_ball_model_file = os.path.join(os.path.dirname(__file__), "manipulator_bring_ball.xml")
 
+_ARM_JOINTS = (
+    "arm_root",
+    "arm_shoulder",
+    "arm_elbow",
+    "arm_wrist",
+    "finger",
+    "fingertip",
+    "thumb",
+    "thumbtip",
+)
+_TOUCH_SENSORS = ("palm_touch", "finger_touch", "thumb_touch", "fingertip_touch", "thumbtip_touch")
+
+_HAND_GEOMS = (
+    "hand",
+    "palm1",
+    "palm2",
+    "thumb1",
+    "thumb2",
+    "thumbtip1",
+    "thumbtip2",
+    "finger1",
+    "finger2",
+    "fingertip1",
+    "fingertip2",
+)
+# (hand geom, ball) collision pairs in the legacy hand × object order.
+_HAND_OBJECT_PAIRS = tuple((name, "ball") for name in _HAND_GEOMS)
+
 
 @registry.envcfg("dm-manipulator-bring-ball")
-@dataclass
-class BringBallCfg(EnvCfg):
+@configclass
+class BringBallCfg(DirectEnvCfg):
+    """Control a manipulator to bring a ball to a target location.
+
+    zh_CN: 控制机械臂把球移动到目标位置。
+    """
+
     # Simulation
-    model_file: str = bring_ball_model_file
+    scene: SceneCfg = SceneCfg(
+        file=bring_ball_model_file,
+        system_camera=SystemCameraCfg(distance=11.0, elevation=-25.0, azimuth=135.0),
+    )
     max_episode_seconds: float = 10.0
-    sim_dt: float = 0.01
+    sim: SimCfg = SimCfg(dt=0.01)
     ctrl_dt: float = 0.01
     render_spacing: float = 2.5
 
@@ -50,11 +76,6 @@ class BringBallCfg(EnvCfg):
     object_x_vel_range: tuple[float, float] = (-5.0, 5.0)
     min_object_hand_dist: float = 0.08
 
-    # Physics settling at episode start (in control steps, i.e. ctrl_dt units).
-    # Internally this will be converted to `settle_steps * sim_substeps` physics steps.
-    settle_steps: int = 80
-    settle_zero_vel: bool = True
-
     # BringBall reward shaping.
     lift_height_threshold: float = 0.04
     touch_threshold: float = 0.01
@@ -72,7 +93,6 @@ class BringBallCfg(EnvCfg):
     precision_value_at_margin: float = 0.1
 
     # BringBall-specific overrides.
-    settle_steps: int = 300
     p_in_hand: float = 0.0
     p_in_target: float = 0.0
     randomize_arm: bool = False

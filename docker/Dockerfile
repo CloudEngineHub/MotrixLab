@@ -1,3 +1,6 @@
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
+
 FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -27,12 +30,12 @@ WORKDIR ${HOMEDIR}/motrixlab
 #
 # Stage 1 (below): Install heavy framework dependencies
 #   - Installs large ML frameworks (SKRL, JAX, PyTorch, TensorFlow) (~3GB)
-#   - Skips workspace members (motrix-envs, motrixsim) that depend on source code
+#   - Skips workspace members (motrix-env-core, motrix-envs, motrix-rl) and MotrixSim
 #   - These dependencies rarely change, so this layer is heavily cached
 #   - Mounts only configuration files (pyproject.toml, uv.lock), no source code
 #
 # Stage 2 (after source copy): Install workspace members and remaining dependencies
-#   - Installs all workspace members (motrix-envs, motrix-rl, motrixsim)
+#   - Installs all workspace members (motrix-env-core, motrix-envs, motrix-rl) and MotrixSim
 #   - Source code changes only invalidate this stage, not Stage 1
 #   - Significantly faster rebuilds during development
 #
@@ -43,11 +46,12 @@ WORKDIR ${HOMEDIR}/motrixlab
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    --mount=type=bind,source=motrix_env_core/pyproject.toml,target=motrix_env_core/pyproject.toml \
     --mount=type=bind,source=motrix_envs/pyproject.toml,target=motrix_envs/pyproject.toml \
     --mount=type=bind,source=motrix_rl/pyproject.toml,target=motrix_rl/pyproject.toml \
     --mount=type=bind,source=uv.toml,target=uv.toml \
     --mount=type=bind,source=uv.lock,target=uv.lock \
-    uv sync --frozen --no-install-workspace --package motrix-rl --no-install-package motrix-envs --no-install-package motrixsim --extra skrl-jax --extra skrl-torch
+    uv sync --frozen --no-install-workspace --package motrix-rl --no-install-package motrix-env-core --no-install-package motrix-envs --no-install-package motrixsim --extra skrl-jax --extra skrl-torch
 
 COPY --chown=${USERNAME}:${USERNAME} . .
 

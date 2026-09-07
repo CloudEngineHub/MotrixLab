@@ -1,0 +1,19 @@
+# @package _global_
+# Task franka-open-cabinet: rslrl.ppo shared training recipe.
+defaults:
+  - /algo_base@algo: rslrl.ppo
+  - _self_
+task:
+  env: franka-open-cabinet
+  rllib: rslrl
+  algo: ppo
+  train_backend: null
+num_envs: 2048
+play_num_envs: 16
+seed: 64
+algo:
+  num_steps_per_env: 16
+  max_iterations: 1500
+  algorithm:
+    num_mini_batches: 32
+    entropy_coef: 0.001

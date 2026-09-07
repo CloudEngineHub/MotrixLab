@@ -1,0 +1,27 @@
+# @package _global_
+# Task rm65_insert_peg: motrix.fastsac shared training recipe.
+defaults:
+  - /algo_base@algo: motrix.fastsac
+  - _self_
+task:
+  env: rm65_insert_peg
+  rllib: motrix
+  algo: fastsac
+num_envs: 2048
+play_num_envs: 16
+seed: 42
+checkpoint:
+  interval: 1000
+algo:
+  agent:
+    gamma: 0.99
+    max_grad_norm: 1.0
+    num_atoms: 201
+    v_min: -500.0
+    v_max: 200000.0
+    num_steps: 3
+    alpha_init: 0.01
+    target_entropy_ratio: -0.05
+    learning_starts: 64
+  trainer:
+    num_learning_iterations: 20000

@@ -1,0 +1,15 @@
+defaults:
+  - view_schema
+  - _self_
+  # Console logging only; don't drop a <job>.log file in the working dir.
+  - override hydra/job_logging: stdout
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .
+  sweep:
+    dir: .
+    subdir: ${hydra.job.num}
+  job:
+    chdir: false

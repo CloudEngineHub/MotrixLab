@@ -1,0 +1,51 @@
+name: Branch policy
+
+on:
+  pull_request:
+    branches: [main, stable]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate pull request target and source
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_BRANCH: ${{ github.base_ref }}
+          HEAD_BRANCH: ${{ github.head_ref }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          case "$BASE_BRANCH" in
+            main)
+              if [[ "$HEAD_BRANCH" == hotfix/* ]]; then
+                echo "Hotfix branches must target stable first; back-merge stable into main after release."
+                exit 1
+              fi
+              if [[ "$HEAD_BRANCH" == stable && "$HEAD_REPOSITORY" != "Motphys/MotrixLab" ]]; then
+                echo "The post-hotfix stable-to-main back-merge must come from the upstream repository."
+                exit 1
+              fi
+              ;;
+            stable)
+              if [[ "$HEAD_BRANCH" == main && "$HEAD_REPOSITORY" != "Motphys/MotrixLab" ]]; then
+                echo "The main-to-stable release PR must come from the upstream repository."
+                exit 1
+              fi
+              if [[ "$HEAD_BRANCH" != main && "$HEAD_BRANCH" != hotfix/* ]]; then
+                echo "Only the main release branch or a hotfix/* branch may target stable."
+                exit 1
+              fi
+              ;;
+            *)
+              echo "Pull requests must target main or stable."
+              exit 1
+              ;;
+          esac
+
+      - name: Explain manual dispatch
+        if: github.event_name == 'workflow_dispatch'
+        run: echo "Branch policy is evaluated automatically for pull requests."

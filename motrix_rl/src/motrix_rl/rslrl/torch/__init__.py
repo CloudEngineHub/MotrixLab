@@ -1,20 +1,28 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
 
 """PyTorch backend for RSLRL integration."""
 
-from motrix_rl.rslrl.torch.wrap_vec_env import RslrlNpEnvWrap
+import torch
 
-__all__ = ["RslrlNpEnvWrap"]
+from motrix_env_core.renderer import RenderConfig
+from motrix_rl.rslrl.torch.wrap_np import RslrlNpEnvWrap
+
+
+def wrap_env(env, device: torch.device, render: RenderConfig | None = None):
+    """Wrap the environment for RSLRL."""
+    from motrix_env_core.array.env import ArrayEnv
+    from motrix_env_motrixsim.torch_env import TorchEnv
+
+    if isinstance(env, TorchEnv):
+        from motrix_rl.rslrl.torch.wrap_torch import RslrlTorchEnvWrap
+
+        return RslrlTorchEnvWrap(env, device, render=render)
+    if isinstance(env, ArrayEnv):
+        from motrix_rl.rslrl.torch.wrap_np import RslrlNpEnvWrap
+
+        return RslrlNpEnvWrap(env, device, render=render)
+    raise TypeError(f"RSLRL does not support environment type '{type(env).__name__}'.")
+
+
+__all__ = ["RslrlNpEnvWrap", "wrap_env"]

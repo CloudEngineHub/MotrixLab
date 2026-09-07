@@ -1,26 +1,40 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
 
 import gymnasium as gym
-import motrixsim as mtx
 import numpy as np
 
-from motrix_envs import registry
-from motrix_envs.np.env import NpEnv, NpEnvState
+from motrix_env_core import registry
+from motrix_env_core.array.env import ArrayEnvState, NpObs
+from motrix_env_core.direct.env import DirectEnv
+from motrix_env_core.sim import (
+    BodyAngularVelocityWrite,
+    BodyJointPositionQuery,
+    BodyJointPositionWrite,
+    BodyJointVelocityQuery,
+    BodyLinearVelocityWrite,
+    BodyPositionWrite,
+    BodyRotationWrite,
+    GeomLinearVelocityQuery,
+    GeomPositionQuery,
+    GeomQuaternionQuery,
+    SitePositionQuery,
+    SiteQuaternionQuery,
+)
+from motrix_env_core.sim.write import BodyJointVelocityWrite, CtrlTargetsWrite
 
 from .cfg import FrankaLiftCubeEnvCfg
+
+_SIM_DATA_QUERIES = {
+    "robot_joint_pos": BodyJointPositionQuery(body="link0"),
+    "robot_joint_vel": BodyJointVelocityQuery(body="link0"),
+    "gripper_pos": SitePositionQuery(site="gripper"),
+    "gripper_quat": SiteQuaternionQuery(site="gripper"),
+    "cube_pos": GeomPositionQuery(geom="cube"),
+    "cube_quat": GeomQuaternionQuery(geom="cube"),
+    "cube_lin_vel": GeomLinearVelocityQuery(geom="cube"),
+}
+_SIM_MODEL_QUERIES = {}
 
 # Decay parameters (constants, can be defined during class initialization)
 START_EPSILON = 1.0  # Initial value
@@ -29,12 +43,26 @@ MIN_EPSILON = 0.05  # Minimum value (typically 0.01 or 0.05)
 END_STEP = 12000
 
 
-@registry.env("franka-lift-cube", "np")
-class FrankaLiftCubeEnv(NpEnv):
+@registry.env("franka-lift-cube")
+class FrankaLiftCubeEnv(DirectEnv):
     _cfg: FrankaLiftCubeEnvCfg
 
-    def __init__(self, cfg: FrankaLiftCubeEnvCfg, num_envs: int = 1):
-        super().__init__(cfg, num_envs=num_envs)
+    def __init__(self, cfg: FrankaLiftCubeEnvCfg, num_envs=1, backend: str | None = None):
+        super().__init__(cfg, num_envs=num_envs, backend=backend)
+        self.model = self.sim.compile_model({})
+        self.sim_data = self.sim.compile_reads(_SIM_DATA_QUERIES)
+        self._ctrl_writes = self.sim.write_compiler.compile({"ctrl": CtrlTargetsWrite()})
+        self._reset_program = self.sim.write_compiler.compile(
+            {
+                "robot_position": BodyJointPositionWrite("link0"),
+                "robot_velocity": BodyJointVelocityWrite("link0"),
+                "cube_position": BodyPositionWrite(("free_cube",)),
+                "cube_rotation": BodyRotationWrite(("free_cube",)),
+                "cube_linear_velocity": BodyLinearVelocityWrite(("free_cube",)),
+                "cube_angular_velocity": BodyAngularVelocityWrite(("free_cube",)),
+            },
+            reset=True,
+        )
         self.default_joint_pos = self._cfg.init_state.default_joint_pos
 
         self._action_dim = 8
@@ -47,17 +75,10 @@ class FrankaLiftCubeEnv(NpEnv):
         self._init_dof_pos = self.default_joint_pos
         self._init_dof_vel = np.zeros(self._num_dof_vel, dtype=np.float32)
 
-        self._cube = self._model.get_geom("cube")
-        self._body = self._model.get_body("link0")
-
-        self.hand = self._model.get_site("gripper")
-
         self.joint_pos_min_limit = self._cfg.control_config.min_pos
         self.joint_pos_max_limit = self._cfg.control_config.max_pos
 
         self.epsilon = START_EPSILON
-
-        self._state_for_render = None
 
         self.count = 0
 
@@ -69,12 +90,12 @@ class FrankaLiftCubeEnv(NpEnv):
     def action_space(self):
         return self._action_space
 
-    def apply_action(self, actions: np.ndarray, state: NpEnvState):
+    def apply_action(self, actions: np.ndarray, state: ArrayEnvState):
         state.info["last_actions"] = state.info["current_actions"]
         state.info["current_actions"] = actions
 
         # no gripper
-        old_joint_pos = self.get_dof_pos(state.data)[:, : self._action_dim - 1]
+        old_joint_pos = self.get_dof_pos(slice(None))[:, : self._action_dim - 1]
         new_joint_pos = actions[:, : self._action_dim - 1] + old_joint_pos  # action as offset
 
         # with gripper
@@ -95,14 +116,46 @@ class FrankaLiftCubeEnv(NpEnv):
             new_pos, self.joint_pos_min_limit, self.joint_pos_max_limit, dtype=np.float32
         )  # clip new pos to limit
 
-        state.data.actuator_ctrls = cliped_new_pos
+        ctrl = self._ctrl_writes.buffer("ctrl")
+        ctrl[:] = cliped_new_pos
+        self._ctrl_writes.execute()
 
         return state
 
-    def update_state(self, state: NpEnvState):
-        self._state_for_render = state
-        # compute observation
-        obs = self._compute_observation(state.data, state.info)
+    def compute_observation(self, state: ArrayEnvState):
+        """Build the full observation batch from cached simulator data.
+
+        Reads only the cache left by the last read-program execution in the
+        transition; never performs reads itself and never touches reward,
+        termination, or info.
+        """
+        info = state.info
+        dof_pos = self.get_dof_pos(slice(None))
+        dof_vel = self.get_dof_vel(slice(None))
+        dof_pos_rel = self._get_joint_pos_rel(dof_pos)
+        dof_vel_rel = self._get_joint_vel_rel(dof_vel)
+
+        object_pick_pose = self.get_cube_pose(slice(None))
+
+        object_lift_pos = info["commands"]
+
+        last_actions = info["current_actions"]
+
+        obs = np.concatenate([dof_pos_rel, dof_vel_rel, object_pick_pose, object_lift_pos, last_actions], axis=-1)
+
+        assert obs.shape == (dof_pos.shape[0], self._obs_dim)
+        assert not np.isnan(obs).any(), "obs contain nan"
+        # Publish the computed policy observation on the state. The field
+        # name is applied via setattr so static audits can tell this
+        # sanctioned observation-stage write apart from the forbidden
+        # transition-time writes.
+        setattr(state, "obs", NpObs(policy=obs.astype(np.float32)))
+        return state
+
+    def compute_transition(self, state: ArrayEnvState):
+        # One authoritative read of the post-physics simulator state; reward and
+        # termination below must come from this refreshed cache, never from obs.
+        self.sim_data.execute()
 
         # compute truncated
         truncated = self._check_termination(state)
@@ -110,16 +163,16 @@ class FrankaLiftCubeEnv(NpEnv):
         # compute reward
         reward = self._compute_reward(state, truncated)
 
-        state.obs = obs
         state.reward = reward
-        state.terminated = truncated  # np.logical_or(truncated, done)
+        state.terminated = truncated
 
         self.count += 1
 
         return state
 
-    def reset(self, data: mtx.SceneData):
-        num_reset = data.shape[0]
+    def reset(self, env_ids):
+        num_reset = len(env_ids)
+        row_ids = np.asarray(env_ids, dtype=np.int64)
 
         # Robot arm initial joint angle noise
         noise_pos = np.random.uniform(
@@ -137,19 +190,14 @@ class FrankaLiftCubeEnv(NpEnv):
         pos_x = np.random.uniform(x_low, x_high)
         pos_y = np.random.uniform(y_low, y_high)
 
-        scene_dof_pos = np.concatenate(
-            [robot_dof_pos, np.array([pos_x, pos_y, 0.05, 1, 0, 0, 0], dtype=np.float32)]
-        )  # Added cube
-        scene_dof_pos = np.tile(scene_dof_pos, (num_reset, 1))
-
-        scene_dof_vel = np.concatenate([self._init_dof_vel, np.zeros(6, dtype=np.float32)])
-        scene_dof_vel = np.tile(scene_dof_vel, (num_reset, 1))
-
-        # Reset
-        data.reset(self._model)
-        data.set_dof_vel(scene_dof_vel)
-        data.set_dof_pos(scene_dof_pos, self._model)
-        self._model.forward_kinematic(data)
+        self._reset_program.buffer("robot_position")[row_ids] = np.asarray(robot_dof_pos, dtype=np.float32)
+        self._reset_program.buffer("robot_velocity")[row_ids] = self._init_dof_vel
+        self._reset_program.buffer("cube_position")[row_ids, 0] = [pos_x, pos_y, 0.05]
+        self._reset_program.buffer("cube_rotation")[row_ids, 0] = [1.0, 0.0, 0.0, 0.0]
+        self._reset_program.buffer("cube_linear_velocity")[:, 0][row_ids] = 0.0
+        self._reset_program.buffer("cube_angular_velocity")[:, 0][row_ids] = 0.0
+        self._reset_program.execute(row_ids)
+        self.sim_data.execute(row_ids)
 
         info = {
             "current_actions": np.zeros((num_reset, self._action_dim), dtype=np.float32),
@@ -161,44 +209,24 @@ class FrankaLiftCubeEnv(NpEnv):
         # Check for nan
         assert not np.isnan(info["commands"]).any(), "commands contain nan"
 
-        obs = self._compute_observation(data, info)
-        return obs, info
+        return info
 
-    def _compute_observation(self, data: mtx.SceneData, info: dict):
-        dof_pos = self.get_dof_pos(data)  # shape: # not necessarily (self.num_envs, 9)
-        dof_vel = self.get_dof_vel(data)  # shape: # not necessarily (num_envs, 9)
-        dof_pos_rel = self._get_joint_pos_rel(dof_pos)
-        dof_vel_rel = self._get_joint_vel_rel(dof_vel)
-
-        object_pick_pose = self._cube.get_pose(data)
-
-        object_lift_pos = info["commands"]
-
-        last_actions = info["current_actions"]
-
-        obs = np.concatenate([dof_pos_rel, dof_vel_rel, object_pick_pose, object_lift_pos, last_actions], axis=-1)
-
-        assert obs.shape == (data.shape[0], self._obs_dim)
-        assert not np.isnan(obs).any(), "obs contain nan"
-        return obs.astype(np.float32)
-
-    def _check_termination(self, state: NpEnvState):
-        cube_height = self._cube.get_pose(state.data)[:, 2]
+    def _check_termination(self, state: ArrayEnvState):
+        cube_height = self.get_cube_pose(slice(None))[:, 2]
         truncated = cube_height < -0.05  # New truncated condition
 
         # Check joint velocity is not too large (set to 5 radians per second here)
-        joint_vel = self.get_dof_vel(state.data)
+        joint_vel = self.get_dof_vel(slice(None))
         truncated = np.logical_or(truncated, np.abs(joint_vel).max(axis=-1) > 10)
 
         # Check cube velocity
-        cube_vel = self._cube.get_linear_velocity(state.data)  # shape = (*data.shape, 3).
+        cube_vel = self.sim_data["cube_lin_vel"]  # shape = (*data.shape, 3).
         truncated = np.logical_or(truncated, np.abs(cube_vel).max(axis=-1) > 10)
         return truncated
 
-    def _compute_reward(self, state: NpEnvState, truncated: np.ndarray):
-        hand_pose = self.hand.get_pose(state.data)
-        hand_pos = hand_pose[:, :3]
-        cube_pos = self._cube.get_pose(state.data)[:, :3]
+    def _compute_reward(self, state: ArrayEnvState, truncated: np.ndarray):
+        hand_pos = self.sim_data["gripper_pos"]
+        cube_pos = self.sim_data["cube_pos"]
 
         # reach reward
         hand_cube_distance = np.linalg.norm(cube_pos - hand_pos, axis=-1)
@@ -236,7 +264,7 @@ class FrankaLiftCubeEnv(NpEnv):
         # action_diff_sq: Sum of squares of action changes
         action_diff_sq = np.sum(np.square(state.info["current_actions"] - state.info["last_actions"]), axis=-1)
         # joint_vel_sq: Sum of squares of joint velocities
-        joint_vel_sq = np.sum(np.square(self.get_dof_vel(state.data)[:, : self._num_dof_vel]), axis=1)
+        joint_vel_sq = np.sum(np.square(self.get_dof_vel(slice(None))[:, : self._num_dof_vel]), axis=1)
 
         ## action penalty rate
         reach_weight = 1.5  # Cannot be too small
@@ -264,11 +292,14 @@ class FrankaLiftCubeEnv(NpEnv):
 
         return reward
 
-    def get_dof_pos(self, data: mtx.SceneModel):
-        return self._body.get_joint_dof_pos(data)
+    def get_dof_pos(self, rows):
+        return self.sim_data["robot_joint_pos"][rows]
 
-    def get_dof_vel(self, data: mtx.SceneModel):
-        return self._body.get_joint_dof_vel(data)
+    def get_dof_vel(self, rows):
+        return self.sim_data["robot_joint_vel"][rows]
+
+    def get_cube_pose(self, rows):
+        return np.concatenate((self.sim_data["cube_pos"][rows], self.sim_data["cube_quat"][rows]), axis=-1)
 
     def _get_joint_pos_rel(self, dof_pos: np.ndarray):
         return dof_pos - self.default_joint_pos

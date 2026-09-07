@@ -1,33 +1,23 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
 
 import os
-from dataclasses import dataclass, field
 
-from motrix_envs import registry
-from motrix_envs.base import EnvCfg
+from motrix_env_core import registry
+from motrix_env_core.base import SimCfg
+from motrix_env_core.config import configclass
+from motrix_env_core.config.scene import SceneCfg
+from motrix_env_core.direct.env import DirectEnvCfg
 
 model_file = os.path.dirname(__file__) + "/xmls/scene.xml"
 
 
-@dataclass
+@configclass
 class ResetConfig:
     joint_pos_noise_scale: float = 0
 
 
-@dataclass
+@configclass
 class ArmControlConfig:
     action_mode: str = "joint_target"
     action_in_degrees: bool = False
@@ -51,7 +41,7 @@ class ArmControlConfig:
     max_joint_acc_max: float = 12.0
 
 
-@dataclass
+@configclass
 class GripperControlConfig:
     action_mode: str = "binary"
     use_sigmoid: bool = True
@@ -64,7 +54,7 @@ class GripperControlConfig:
     actuator_lag_alpha: float = 0.062
 
 
-@dataclass
+@configclass
 class RewardConfig:
     dist_std: float = 0.4
     dist_scale: float = 15.0
@@ -112,13 +102,13 @@ class RewardConfig:
     truncation_penalty: float = 10.0
 
 
-@dataclass
+@configclass
 class TerminationConfig:
     tcp_behind_handle_threshold: float = -0.02
     max_joint_vel: float = 3.93
 
 
-@dataclass
+@configclass
 class ObservationNoiseConfig:
     enabled: bool = True
     joint_noise_enabled: bool = True
@@ -136,18 +126,23 @@ class ObservationNoiseConfig:
 
 
 @registry.envcfg("rm65-open-cabinet")
-@dataclass
-class RM65OpenCabinetEnvCfg(EnvCfg):
-    model_file: str = model_file
+@configclass
+class RM65OpenCabinetEnvCfg(DirectEnvCfg):
+    """Control RM65 to grasp a handle and open the cabinet's bottom drawer.
+
+    zh_CN: 控制 RM65 抓住把手并拉开柜体底部抽屉。
+    """
+
+    scene: SceneCfg = SceneCfg(file=model_file)
     max_episode_seconds: float = 30.0
-    sim_dt: float = 0.005
+    sim: SimCfg = SimCfg(dt=0.005)
     ctrl_dt: float = 0.025
     render_spacing: float = 2.0
     action_scale = (0.05, 0.05, 0.05, 0.05, 0.05, 0.05)
     action_history_len: int = 9
-    reset: ResetConfig = field(default_factory=ResetConfig)
-    reward: RewardConfig = field(default_factory=RewardConfig)
-    termination: TerminationConfig = field(default_factory=TerminationConfig)
-    arm_control: ArmControlConfig = field(default_factory=ArmControlConfig)
-    gripper_control: GripperControlConfig = field(default_factory=GripperControlConfig)
-    observation_noise: ObservationNoiseConfig = field(default_factory=ObservationNoiseConfig)
+    reset: ResetConfig = ResetConfig()
+    reward: RewardConfig = RewardConfig()
+    termination: TerminationConfig = TerminationConfig()
+    arm_control: ArmControlConfig = ArmControlConfig()
+    gripper_control: GripperControlConfig = GripperControlConfig()
+    observation_noise: ObservationNoiseConfig = ObservationNoiseConfig()

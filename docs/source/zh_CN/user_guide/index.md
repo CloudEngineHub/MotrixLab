@@ -7,6 +7,7 @@
 getting_started/installation
 getting_started/container_deployment
 getting_started/hello_motrixlab
+robots
 
 ```
 
@@ -19,33 +20,32 @@ tutorial/physics_environment
 tutorial/training_environment_config
 tutorial/rewards
 tutorial/training_and_result
+tutorial/runs_and_checkpoints
 
 ```
 
 ```{toctree}
-:caption: 训练示例
+:caption: 进阶主题
 :maxdepth: 1
 
-demo/acrobot
-demo/cartpole
-demo/pendulum
-demo/bounce_ball
-demo/dm_walker
-demo/dm_cheetah
-demo/dm_hopper
-demo/dm_reacher
-demo/dm_lqr
-demo/dm_finger
-demo/dm_humanoid
-demo/dm_quadruped
-demo/bring_ball
-demo/dm_point_mass
-demo/locomotion_unitree_go1
-demo/locomotion_unitree_go1_rough_terrain
-demo/anymal_c
-demo/franka_lift_cube
-demo/franka_open_cabinet
-demo/rm65_open_cabinet
-demo/shadow_hand_repose
+tutorial/export_onnx
+tutorial/motrix_deploy
+tutorial/input_devices_and_bindings
+tutorial/custom_training_backend
+
+```
+
+```{toctree}
+:caption: 环境
+:maxdepth: 2
+
+环境概览 <envs/index>
+envs/basic/index
+envs/dm_control/index
+envs/whole_body_tracking/index
+envs/humanoid_velocity_tracking
+envs/quadruped_velocity_tracking
+envs/quadruped_locomotion/index
+envs/manipulation/index
 
 ```

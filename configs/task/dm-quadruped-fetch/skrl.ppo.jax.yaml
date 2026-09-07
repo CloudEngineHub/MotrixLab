@@ -1,0 +1,10 @@
+# @package _global_
+# Task dm-quadruped-fetch: skrl.ppo, train_backend=jax delta.
+defaults:
+  - /task/dm-quadruped-fetch/skrl.ppo@_global_
+  - _self_
+task:
+  train_backend: jax
+algo:
+  trainer:
+    timesteps: 20000

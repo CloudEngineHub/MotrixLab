@@ -1,27 +1,26 @@
-# Copyright (C) 2020-2025 Motphys Technology Co., Ltd. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# Copyright Motphys Technology Co., Ltd. 2025, 2026
+# SPDX-License-Identifier: Apache-2.0
 
 import gymnasium as gym
-import motrixsim as mtx
 import numpy as np
 
-from motrix_envs import registry
+from motrix_env_core import registry
+from motrix_env_core.array.env import ArrayEnvState
+from motrix_env_core.direct import reward as reward_utils
+from motrix_env_core.direct.env import DirectEnv
+from motrix_env_core.math import quaternion
+from motrix_env_core.sim import (
+    DofPositionLimitsQuery,
+    GeomPairCollidingQuery,
+    JointPositionQuery,
+    JointPositionWrite,
+    JointVelocityQuery,
+    SensorValuesQuery,
+    SitePositionQuery,
+    SiteQuaternionQuery,
+)
+from motrix_env_core.sim.write import CtrlTargetsWrite, JointVelocityWrite, MocapPoseWrite
 from motrix_envs.basic.manipulator.cfg import BringBallCfg
-from motrix_envs.math import quaternion
-from motrix_envs.np import reward as reward_utils
-from motrix_envs.np.env import NpEnv, NpEnvState
 
 _ARM_JOINTS = (
     "arm_root",
@@ -33,6 +32,7 @@ _ARM_JOINTS = (
     "thumb",
     "thumbtip",
 )
+
 _TOUCH_SENSORS = ("palm_touch", "finger_touch", "thumb_touch", "fingertip_touch", "thumbtip_touch")
 
 _HAND_GEOMS = (
@@ -48,6 +48,23 @@ _HAND_GEOMS = (
     "fingertip1",
     "fingertip2",
 )
+
+_HAND_OBJECT_PAIRS = tuple((name, "ball") for name in _HAND_GEOMS)
+
+_SIM_DATA_QUERIES = {
+    "arm_pos": JointPositionQuery(joints=_ARM_JOINTS),
+    "arm_vel": JointVelocityQuery(joints=_ARM_JOINTS),
+    "grasp_pos": SitePositionQuery(site="grasp"),
+    "grasp_quat": SiteQuaternionQuery(site="grasp"),
+    "ball_pos": SitePositionQuery(site="ball"),
+    "target_pos": SitePositionQuery(site="target_ball"),
+    "fingertip_pos": SitePositionQuery(site="fingertip_touch"),
+    "thumbtip_pos": SitePositionQuery(site="thumbtip_touch"),
+    # Columns follow the declared sensors order (_TOUCH_SENSORS).
+    "touch": SensorValuesQuery(sensors=_TOUCH_SENSORS),
+    "hand_object_colliding": GeomPairCollidingQuery(pairs=_HAND_OBJECT_PAIRS),
+}
+_SIM_MODEL_QUERIES = {"dof_position_limits": DofPositionLimitsQuery()}
 
 
 def _sanitize_joint_limits(low: np.ndarray, high: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -80,73 +97,48 @@ def _tolerance(
     return reward_utils.tolerance(x, bounds=bounds, margin=margin, sigmoid=sigmoid, value_at_margin=value_at_margin)
 
 
-class ManipulatorBase(NpEnv):
+class ManipulatorBase(DirectEnv):
     _cfg: BringBallCfg
     _observation_space: gym.spaces.Box
     _action_space: gym.spaces.Box
 
-    def __init__(self, cfg: BringBallCfg, num_envs: int = 1):
-        super().__init__(cfg, num_envs=num_envs)
+    def __init__(self, cfg: BringBallCfg, num_envs=1, backend: str | None = None):
+        super().__init__(cfg, num_envs, backend=backend)
+        self.model = self.sim.compile_model(_SIM_MODEL_QUERIES)
+        self.sim_data = self.sim.compile_reads(_SIM_DATA_QUERIES)
+        self._target_writes = self.sim.write_compiler.compile({"target": MocapPoseWrite(("target_ball",))})
+        self._ctrl_writes = self.sim.write_compiler.compile({"ctrl": CtrlTargetsWrite()})
+        object_joints = ("ball_x", "ball_z", "ball_y")
+        self._reset_program = self.sim.write_compiler.compile(
+            {
+                "arm_position": JointPositionWrite(_ARM_JOINTS),
+                "arm_velocity": JointVelocityWrite(_ARM_JOINTS),
+                "object_position": JointPositionWrite(object_joints),
+                "object_velocity": JointVelocityWrite(object_joints),
+            },
+            reset=True,
+        )
+        self._arm_reset_position = self._reset_program.buffer("arm_position")
+        self._arm_reset_velocity = self._reset_program.buffer("arm_velocity")
+        self._object_reset_position = self._reset_program.buffer("object_position")
+        self._object_reset_velocity = self._reset_program.buffer("object_velocity")
         self._cfg = cfg
 
-        self._joint_limit_low, self._joint_limit_high = _sanitize_joint_limits(*self._model.joint_limits)
+        dof_lower, dof_upper = self.model.others["dof_position_limits"]
+        self._joint_limit_low, self._joint_limit_high = _sanitize_joint_limits(dof_lower, dof_upper)
 
-        self._arm_joint_pos_indices = np.array([self._joint_pos_index(n) for n in _ARM_JOINTS], dtype=np.int32)
-        self._arm_joint_vel_indices = np.array([self._joint_vel_index(n) for n in _ARM_JOINTS], dtype=np.int32)
-
-        self._thumb_qpos_i = self._joint_pos_index("thumb")
-        self._finger_qpos_i = self._joint_pos_index("finger")
-        self._thumbtip_qpos_i = self._joint_pos_index("thumbtip")
-        self._fingertip_qpos_i = self._joint_pos_index("fingertip")
-
-        self._grasp_site = self._model.get_site("grasp")
-        # Ensure correct actuator index is retrieved from base model
-        self._grasp_act_i = int(self._model.get_actuator_index("grasp"))
-
-        self._object_site = self._model.get_site("ball")
-        self._target_site = self._model.get_site("target_ball")
-        target_body = self._model.get_body("target_ball")
-        if target_body is None:
-            raise ValueError("Target body 'target_ball' not found in model")
-        self._target_mocap = target_body.mocap
-
-        object_qpos_joints = ("ball_x", "ball_z", "ball_y")
-        object_geom_names = ("ball",)
-
-        self._object_qpos_indices = np.array([self._joint_pos_index(n) for n in object_qpos_joints], dtype=np.int32)
-        self._object_qvel_indices = np.array([self._joint_vel_index(n) for n in object_qpos_joints], dtype=np.int32)
-        self._object_x_qvel_i = int(self._object_qvel_indices[0])
-
-        self._hand_geom_indices = np.array([self._model.get_geom_index(name) for name in _HAND_GEOMS], dtype=np.uint32)
-        object_geom_indices = np.array(
-            [self._model.get_geom_index(name) for name in object_geom_names], dtype=np.uint32
-        )
-        self._hand_object_pairs = np.stack(
-            [
-                np.repeat(self._hand_geom_indices, object_geom_indices.shape[0]),
-                np.tile(object_geom_indices, self._hand_geom_indices.shape[0]),
-            ],
-            axis=-1,
-        ).astype(np.uint32)
-        self._num_hand_object_pairs = int(self._hand_object_pairs.shape[0])
-
-        self._init_dof_pos = self._model.compute_init_dof_pos().astype(np.float32)
-        self._init_dof_vel = np.zeros((self._model.num_dof_vel,), dtype=np.float32)
+        # Canonical actuator order comes straight from the declared specs.
+        actuator_indices = {spec.name: index for index, spec in enumerate(self.model.actuators)}
+        self._grasp_act_i = int(actuator_indices["grasp"])
 
         self._init_action_space()
         self._init_obs_space()
 
-    def _joint_pos_index(self, joint_name: str) -> int:
-        joint_index = self._model.get_joint_index(joint_name)
-        return int(self._model.joint_dof_pos_indices[joint_index])
-
-    def _joint_vel_index(self, joint_name: str) -> int:
-        joint_index = self._model.get_joint_index(joint_name)
-        return int(self._model.joint_dof_vel_indices[joint_index])
-
     def _init_action_space(self):
-        low, high = self._model.actuator_ctrl_limits
-        self._action_space = gym.spaces.Box(low, high, (self._model.num_actuators,), dtype=np.float32)
+        ctrl_ranges = np.asarray([spec.ctrl_range for spec in self.model.actuators], dtype=np.float32)
+        self._action_space = gym.spaces.Box(
+            ctrl_ranges[:, 0], ctrl_ranges[:, 1], (self.num_actuators,), dtype=np.float32
+        )
 
     def _init_obs_space(self):
         # arm_pos(sin,cos)=16 + arm_vel=8 + touch=5 + hand=3 + object=3 + target=3 + rel=3
@@ -160,60 +152,57 @@ class ManipulatorBase(NpEnv):
     def action_space(self) -> gym.spaces.Box:
         return self._action_space
 
-    def apply_action(self, actions: np.ndarray, state: NpEnvState) -> NpEnvState:
+    def apply_action(self, actions: np.ndarray, state: ArrayEnvState) -> ArrayEnvState:
         actions = np.asarray(actions, dtype=np.float32)
         # Enforce actuator control limits to avoid out-of-range impulses.
         actions = np.clip(actions, self._action_space.low, self._action_space.high).astype(np.float32)
         state.info["last_actions"] = state.info["actions"]
         state.info["actions"] = actions
-        state.data.actuator_ctrls = actions
+        ctrl = self._ctrl_writes.buffer("ctrl")
+        ctrl[:] = actions
+        self._ctrl_writes.execute()
         return state
 
-    def _touch_raw(self, data: mtx.SceneData) -> np.ndarray:
-        values = []
-        for name in _TOUCH_SENSORS:
-            v = np.asarray(self._model.get_sensor_value(name, data)).reshape(data.shape[0], -1)[:, 0]
-            values.append(v)
-        return np.stack(values, axis=-1).astype(np.float32)
+    def _touch_raw(self, rows) -> np.ndarray:
+        # Columns follow the declared sensors order in the cfg.
+        return self.sim_data["touch"][rows].astype(np.float32)
 
-    def _touch_log(self, data: mtx.SceneData) -> np.ndarray:
-        return np.log1p(self._touch_raw(data))
+    def _touch_log(self, rows) -> np.ndarray:
+        return np.log1p(self._touch_raw(rows))
 
-    def _hand_pos(self, data: mtx.SceneData) -> np.ndarray:
-        return self._grasp_site.get_position(data).astype(np.float32)
+    def _hand_pos(self, rows) -> np.ndarray:
+        return self.sim_data["grasp_pos"][rows].astype(np.float32)
 
-    def _object_pos(self, data: mtx.SceneData) -> np.ndarray:
-        return self._object_site.get_position(data).astype(np.float32)
+    def _object_pos(self, rows) -> np.ndarray:
+        return self.sim_data["ball_pos"][rows].astype(np.float32)
 
-    def _target_pos(self, data: mtx.SceneData) -> np.ndarray:
-        return self._target_site.get_position(data).astype(np.float32)
+    def _target_pos(self, rows) -> np.ndarray:
+        return self.sim_data["target_pos"][rows].astype(np.float32)
 
-    def _contact_with_object(self, data: mtx.SceneData) -> np.ndarray:
-        cquery = self._model.get_contact_query(data)
-        colliding = cquery.is_colliding(self._hand_object_pairs)
-        colliding = np.asarray(colliding).reshape((data.shape[0], self._num_hand_object_pairs))
+    def _contact_with_object(self, rows) -> np.ndarray:
+        colliding = self.sim_data["hand_object_colliding"][rows]
         return colliding.any(axis=-1)
 
-    def _get_obs(self, data: mtx.SceneData) -> np.ndarray:
-        qpos = data.dof_pos[:, self._arm_joint_pos_indices]
-        arm_pos = np.stack([np.sin(qpos), np.cos(qpos)], axis=-1).reshape(data.shape[0], -1)
-        arm_vel = data.dof_vel[:, self._arm_joint_vel_indices]
-        touch = self._touch_log(data)
+    def compute_observation(self, state: ArrayEnvState) -> ArrayEnvState:
+        inputs = self.sim_data
+        qpos = inputs["arm_pos"]
+        arm_pos = np.stack([np.sin(qpos), np.cos(qpos)], axis=-1).reshape(-1, 16)
+        arm_vel = inputs["arm_vel"]
+        touch = self._touch_log(slice(None))
 
-        hand_pos = self._hand_pos(data)
-        object_pos = self._object_pos(data)
-        target_pos = self._target_pos(data)
+        hand_pos = self._hand_pos(slice(None))
+        object_pos = self._object_pos(slice(None))
+        target_pos = self._target_pos(slice(None))
         rel = object_pos - target_pos
 
         obs = np.concatenate([arm_pos, arm_vel, touch, hand_pos, object_pos, target_pos, rel], axis=-1)
-        assert obs.shape == (data.shape[0], self._observation_space.shape[0])
-        return obs.astype(np.float32)
+        assert obs.shape[1] == self._observation_space.shape[0]
+        return state.replace(obs=obs.astype(np.float32))
 
     def _sample_arm_joint_angles(self, num: int) -> np.ndarray:
-        joint_indices = np.array([self._model.get_joint_index(n) for n in _ARM_JOINTS], dtype=np.int32)
-        low = self._joint_limit_low[joint_indices]
-        high = self._joint_limit_high[joint_indices]
-        return np.random.uniform(low=low, high=high, size=(num, joint_indices.shape[0])).astype(np.float32)
+        low = self._joint_limit_low[: len(_ARM_JOINTS)]
+        high = self._joint_limit_high[: len(_ARM_JOINTS)]
+        return np.random.uniform(low=low, high=high, size=(num, len(_ARM_JOINTS))).astype(np.float32)
 
     def _sample_target_pose(self, num: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         cfg = self._cfg
@@ -225,18 +214,17 @@ class ManipulatorBase(NpEnv):
         return target_x, target_z, target_angle
 
     def _set_target_mocap(
-        self,
-        data: mtx.SceneData,
-        target_x: np.ndarray,
-        target_z: np.ndarray,
-        target_angle: np.ndarray,
+        self, env_ids: np.ndarray, target_x: np.ndarray, target_z: np.ndarray, target_angle: np.ndarray
     ):
-        pose = np.zeros((data.shape[0], 7), dtype=np.float32)
+        num = len(env_ids)
+        pose = np.zeros((num, 7), dtype=np.float32)
         pose[:, 0] = target_x
         pose[:, 1] = float(self._cfg.target_y)
         pose[:, 2] = target_z
         pose[:, 3:7] = _quat_from_y_angle(target_angle)
-        self._target_mocap.set_pose(data, pose)
+        env_ids = np.asarray(env_ids, dtype=np.int64)
+        self._target_writes.buffer("target")[env_ids, 0] = pose
+        self._target_writes.execute(env_ids)
 
     def _set_object_state(
         self,
@@ -294,100 +282,72 @@ class ManipulatorBase(NpEnv):
         object_z[in_hand] = grasp_pos[in_hand, 2]
         object_angle[in_hand] = 0.0
 
-        dof_pos[:, self._object_qpos_indices] = np.stack([object_x, object_z, object_angle], axis=-1)
+        dof_pos[:] = np.stack([object_x, object_z, object_angle], axis=-1)
 
-        dof_vel[:, self._object_qvel_indices] = 0.0
+        dof_vel[:] = 0.0
         if uniform.any():
-            dof_vel[uniform, self._object_x_qvel_i] = np.random.uniform(
+            dof_vel[uniform, 0] = np.random.uniform(
                 cfg.object_x_vel_range[0], cfg.object_x_vel_range[1], size=(int(uniform.sum()),)
             ).astype(np.float32)
 
-    def _settle(self, data: mtx.SceneData):
-        control_steps = int(self._cfg.settle_steps)
-        if control_steps <= 0:
-            return
-        substeps = int(self._cfg.sim_substeps)
-        physics_steps = control_steps * max(substeps, 1)
-        data.actuator_ctrls = np.zeros((data.shape[0], self._model.num_actuators), dtype=np.float32)
-        for _ in range(physics_steps):
-            self._model.step(data)
-        if self._cfg.settle_zero_vel:
-            data.set_dof_vel(np.zeros((data.shape[0], self._model.num_dof_vel), dtype=np.float32))
-            self._model.forward_kinematic(data)
-
-    def initialize_episode(self, data: mtx.SceneData) -> None:
-        """Episode initialization with optional physics settling (dm_control-style)."""
-        num = int(data.shape[0])
-        dof_pos = np.tile(self._init_dof_pos, (num, 1))
-        dof_vel = np.tile(self._init_dof_vel, (num, 1))
+    def initialize_episode(self, env_ids: np.ndarray) -> None:
+        """Episode initialization: direct state construction, no physics stepping."""
+        num = len(env_ids)
+        row_ids = np.asarray(env_ids, dtype=np.int64)
+        arm_pos = np.zeros((num, len(_ARM_JOINTS)), dtype=np.float32)
+        arm_vel = np.zeros_like(arm_pos)
+        object_pos = np.zeros((num, 3), dtype=np.float32)
+        object_vel = np.zeros((num, 3), dtype=np.float32)
 
         # Optionally randomize arm joint angles and symmetrize the hand.
         if getattr(self._cfg, "randomize_arm", True):
-            arm_angles = self._sample_arm_joint_angles(num)
-            dof_pos[:, self._arm_joint_pos_indices] = arm_angles
-        dof_pos[:, self._finger_qpos_i] = dof_pos[:, self._thumb_qpos_i]
-        dof_pos[:, self._fingertip_qpos_i] = dof_pos[:, self._thumbtip_qpos_i]
+            arm_pos[:] = self._sample_arm_joint_angles(num)
+        arm_pos[:, _ARM_JOINTS.index("finger")] = arm_pos[:, _ARM_JOINTS.index("thumb")]
+        arm_pos[:, _ARM_JOINTS.index("fingertip")] = arm_pos[:, _ARM_JOINTS.index("thumbtip")]
 
-        data.reset(self._model)
-        data.set_dof_vel(dof_vel)
-        data.set_dof_pos(dof_pos, self._model)
-        self._model.forward_kinematic(data)
+        self._arm_reset_position[env_ids] = arm_pos
+        self._arm_reset_velocity[env_ids] = arm_vel
+        self._object_reset_position[env_ids] = object_pos
+        self._object_reset_velocity[env_ids] = object_vel
+        self._reset_program.execute(env_ids)
+        self.sim_data.execute(row_ids)
 
         target_x, target_z, target_angle = self._sample_target_pose(num)
-        self._set_target_mocap(data, target_x, target_z, target_angle)
-        self._model.forward_kinematic(data)
+        grasp_pos = self.sim_data["grasp_pos"][env_ids].copy()
+        self._set_object_state(object_pos, object_vel, target_x, target_z, target_angle, grasp_pos)
+        self._object_reset_position[env_ids] = object_pos
+        self._object_reset_velocity[env_ids] = object_vel
+        self._reset_program.execute(env_ids)
+        self.sim_data.execute(row_ids)
 
-        grasp_pos = self._grasp_site.get_position(data)
-        self._set_object_state(dof_pos, dof_vel, target_x, target_z, target_angle, grasp_pos)
-        data.set_dof_vel(dof_vel)
-        data.set_dof_pos(dof_pos, self._model)
-        self._model.forward_kinematic(data)
+        # The mocap target is written after the last row reset (a reset restores
+        # the default mocap pose).
+        self._set_target_mocap(env_ids, target_x, target_z, target_angle)
+        self.sim_data.execute(row_ids)
 
-        arm_qpos = data.dof_pos[:, self._arm_joint_pos_indices].copy()
-        self._settle(data)
-        if not getattr(self._cfg, "randomize_arm", True):
-            dof_pos_after = data.dof_pos.copy()
-            dof_vel_after = data.dof_vel.copy()
-            dof_pos_after[:, self._arm_joint_pos_indices] = arm_qpos
-            dof_vel_after[:, self._arm_joint_vel_indices] = 0.0
-            data.set_dof_pos(dof_pos_after, self._model)
-            data.set_dof_vel(dof_vel_after)
-            self._model.forward_kinematic(data)
+    def reset(self, env_ids: np.ndarray) -> dict:
+        num = len(env_ids)
+        self.initialize_episode(env_ids)
 
-    def reset(self, data: mtx.SceneData) -> tuple[np.ndarray, dict]:
-        num = int(data.shape[0])
-        self.initialize_episode(data)
-
-        obs = self._get_obs(data)
         info = {
-            "actions": np.zeros((num, self._model.num_actuators), dtype=np.float32),
-            "last_actions": np.zeros((num, self._model.num_actuators), dtype=np.float32),
+            "actions": np.zeros((num, self.num_actuators), dtype=np.float32),
+            "last_actions": np.zeros((num, self.num_actuators), dtype=np.float32),
         }
-        return obs, info
+        return info
 
 
-@registry.env("dm-manipulator-bring-ball", "np")
+@registry.env("dm-manipulator-bring-ball")
 class BringBall(ManipulatorBase):
     _cfg: BringBallCfg
 
-    def __init__(self, cfg: BringBallCfg, num_envs: int = 1):
-        super().__init__(cfg, num_envs=num_envs)
-
-        # 1. Sensors setup
-        self._fingertip_site = self._model.get_site("fingertip_touch")
-        self._thumbtip_site = self._model.get_site("thumbtip_touch")
-        self._touch_idx_palm = _TOUCH_SENSORS.index("palm_touch")
-        self._touch_idx_fingertip = _TOUCH_SENSORS.index("fingertip_touch")
-        self._touch_idx_thumbtip = _TOUCH_SENSORS.index("thumbtip_touch")
-
-    def _compute_hand_direction(self, data: mtx.SceneData) -> np.ndarray:
+    def _compute_hand_direction(self, rows) -> np.ndarray:
         """Calculates the Z-axis vector of the hand (grasp site)."""
-        grasp_pose = self._grasp_site.get_pose(data)
-        return _quat_to_z_axis(grasp_pose[:, 3:])
+        grasp_quat = self.sim_data["grasp_quat"][rows]
+        return _quat_to_z_axis(grasp_quat)
 
-    def _get_tip_positions(self, data: mtx.SceneData) -> tuple[np.ndarray, np.ndarray]:
-        fingertip_pos = self._fingertip_site.get_position(data).astype(np.float32)
-        thumbtip_pos = self._thumbtip_site.get_position(data).astype(np.float32)
+    def _get_tip_positions(self, rows) -> tuple[np.ndarray, np.ndarray]:
+        fingertip_pos = self.sim_data["fingertip_pos"][rows].astype(np.float32)
+        thumbtip_pos = self.sim_data["thumbtip_pos"][rows].astype(np.float32)
         return fingertip_pos, thumbtip_pos
 
     def _compute_aim_direction(self, object_pos: np.ndarray, grasp_pos: np.ndarray) -> np.ndarray:
@@ -395,50 +355,57 @@ class BringBall(ManipulatorBase):
         dist_to_aim = np.linalg.norm(vec_to_aim, axis=-1, keepdims=True)
         return vec_to_aim / (dist_to_aim + 1e-6)
 
-    def _strict_grasp_condition(self, data: mtx.SceneData, object_pos: np.ndarray) -> np.ndarray:
+    def _strict_grasp_condition(self, rows, object_pos: np.ndarray) -> np.ndarray:
         cfg = self._cfg
         height_ok = object_pos[:, 2] > float(cfg.lift_height_threshold)
-        all_touch = self._touch_raw(data)
+        all_touch = self._touch_raw(rows)
 
         touch_threshold = float(cfg.touch_threshold)
 
         touch_ok = (
-            (all_touch[..., self._touch_idx_palm] > touch_threshold)
-            | (all_touch[..., self._touch_idx_fingertip] > touch_threshold)
-            | (all_touch[..., self._touch_idx_thumbtip] > touch_threshold)
+            (all_touch[..., 0] > touch_threshold)
+            | (all_touch[..., 3] > touch_threshold)
+            | (all_touch[..., 4] > touch_threshold)
         )
 
-        object_contact_ok = self._contact_with_object(data)
+        object_contact_ok = self._contact_with_object(rows)
         return height_ok & touch_ok & object_contact_ok
 
-    def update_state(self, state: NpEnvState) -> NpEnvState:
-        data = state.data
+    def compute_transition(self, state: ArrayEnvState) -> ArrayEnvState:
+        self.sim_data.execute()
         cfg = self._cfg
 
-        # 1. Observation
-        obs = self._get_obs(data)
-        terminated = np.isnan(obs).any(axis=-1)
+        # 1. Positions
+        object_pos = self._object_pos(slice(None))
+        target_pos = self._target_pos(slice(None))
+        grasp_pos = self._hand_pos(slice(None))
 
-        # 2. Positions
-        object_pos = self._object_pos(data)
-        target_pos = self._target_pos(data)
-        grasp_pos = self._hand_pos(data)
+        # 2. Terminate on non-finite simulator quantities
+        inputs = self.sim_data
+        terminated = (
+            np.isnan(inputs["arm_pos"]).any(axis=-1)
+            | np.isnan(inputs["arm_vel"]).any(axis=-1)
+            | np.isnan(inputs["touch"]).any(axis=-1)
+            | np.isnan(grasp_pos).any(axis=-1)
+            | np.isnan(object_pos).any(axis=-1)
+            | np.isnan(target_pos).any(axis=-1)
+        )
 
         # 3. Kinematics
-        fingertip_pos, thumbtip_pos = self._get_tip_positions(data)
+        fingertip_pos, thumbtip_pos = self._get_tip_positions(slice(None))
         dist_finger = np.linalg.norm(fingertip_pos - object_pos, axis=-1)
         dist_thumb = np.linalg.norm(thumbtip_pos - object_pos, axis=-1)
         avg_tip_dist = ((dist_finger + dist_thumb) / 2.0).astype(np.float32)
         move_dist = np.linalg.norm(object_pos - target_pos, axis=-1).astype(np.float32)
 
         # 4. Dynamics
-        arm_vel = data.dof_vel[:, self._arm_joint_vel_indices[:4]].astype(np.float32)
+        arm_vel = self.sim_data["arm_vel"][:, :4].astype(np.float32)
         arm_speed = np.linalg.norm(arm_vel, axis=-1).astype(np.float32)
         arm_speed_step = (arm_speed * float(cfg.ctrl_dt)).astype(np.float32)
 
         # 5. Logic Checks
-        is_grasped = self._strict_grasp_condition(data, object_pos)
-        contact_with_obj = self._contact_with_object(data)
+        is_grasped = self._strict_grasp_condition(slice(None), object_pos)
+        contact_with_obj = self._contact_with_object(slice(None))
         hover_threshold = float(cfg.hover_close_threshold)
         is_close_to_ball = (avg_tip_dist < hover_threshold).astype(np.float32)
         grasp_mask = is_grasped.astype(np.float32)
@@ -451,7 +418,7 @@ class BringBall(ManipulatorBase):
         r_reach = (r_reach * post_grasp_scale).astype(np.float32)
 
         # R2: Orient
-        hand_dir = self._compute_hand_direction(data)
+        hand_dir = self._compute_hand_direction(slice(None))
         unit_vec_to_aim = self._compute_aim_direction(object_pos, grasp_pos)
         pointing_dot = np.sum(hand_dir * unit_vec_to_aim, axis=-1)
 
@@ -471,7 +438,7 @@ class BringBall(ManipulatorBase):
         r_pause = (r_pause * post_grasp_scale).astype(np.float32)
 
         # R4: Close
-        default_actions = np.zeros((data.shape[0], self._model.num_actuators), dtype=np.float32)
+        default_actions = np.zeros((self._num_envs, self.num_actuators), dtype=np.float32)
         grasp_action = state.info.get("actions", default_actions)[:, self._grasp_act_i].astype(np.float32)
         r_close_intent = _tolerance(
             grasp_action, bounds=(0.8, 1.0), margin=1.0, sigmoid="linear", value_at_margin=0.01
@@ -511,9 +478,8 @@ class BringBall(ManipulatorBase):
             prev_move_dist = move_dist
         else:
             prev_move_dist = np.asarray(prev_move_dist, dtype=np.float32)
-        if "steps" in state.info:
-            first_step = state.info["steps"] == 0
-            prev_move_dist = np.where(first_step, move_dist, prev_move_dist)
+        first_step = state.episode_steps == 0
+        prev_move_dist = np.where(first_step, move_dist, prev_move_dist)
         progress_clip = float(cfg.transport_progress_clip)
         progress = (prev_move_dist - move_dist) / max(progress_clip, 1e-6)
         progress = np.clip(progress, -1.0, 1.0).astype(np.float32)
@@ -521,7 +487,7 @@ class BringBall(ManipulatorBase):
         state.info["prev_move_dist"] = move_dist.astype(np.float32)
 
         # --- Penalties ---
-        all_touch = self._touch_raw(data)
+        all_touch = self._touch_raw(slice(None))
         side_touch_sum = (all_touch[..., 1] + all_touch[..., 2]).astype(np.float32)
         penalty_side = (
             -float(cfg.side_penalty_scale) * np.tanh(side_touch_sum * float(cfg.side_penalty_tanh_scale))
@@ -566,7 +532,7 @@ class BringBall(ManipulatorBase):
             "total": reward,
         }
 
-        state.info["metrics"] = {
+        state.metrics = {
             "pointing_dot": pointing_dot,
             "is_grasped": is_grasped.astype(np.float32),
             "avg_tip_dist": avg_tip_dist,
@@ -576,4 +542,4 @@ class BringBall(ManipulatorBase):
             "progress_reward": r_progress,
         }
 
-        return state.replace(obs=obs, reward=reward, terminated=terminated)
+        return state.replace(reward=reward, terminated=terminated)
