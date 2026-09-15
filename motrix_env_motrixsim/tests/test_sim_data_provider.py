@@ -356,10 +356,10 @@ class _FrameworkTestBackend(SimBackend):
         raise AssertionError("not exercised")
 
     @property
-    def model_query_compiler(self):
+    def model_compiler(self):
         return self
 
-    def compile(self, queries: Mapping[str, ModelQuery]) -> object:
+    def compile(self, scene: object, queries: Mapping[str, ModelQuery]) -> object:
         raise AssertionError("not exercised")
 
     @property
