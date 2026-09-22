@@ -114,6 +114,7 @@ sh install.sh --all
 | `--gpu` | `cuda`<br>`rocm` | 指定 torch wheel 来源，覆盖自动探测 |
 | `--skrl-jax` | — | SKRL（JAX）训练后端，仅 Linux |
 | `--rslrl` | — | RSL-RL（PyTorch）训练后端 |
+| `--tbb` | — | 为 numba 并行 kernel 安装 Intel TBB 线程层；多核服务器（64 核以上）训练推荐启用，安装后自动生效 |
 | `--docs` | — | 追加本地构建文档所需的工具链（Sphinx） |
 | `-h`、`--help` | — | 显示帮助 |
 

@@ -92,6 +92,7 @@ training backend extra on top of them, and each option only selects or appends t
 | `--gpu` | `cuda`<br>`rocm` | Select the torch wheel flavor explicitly, overriding auto-detection |
 | `--skrl-jax` | — | SKRL on JAX backend, Linux only |
 | `--rslrl` | — | RSL-RL on PyTorch backend |
+| `--tbb` | — | Install Intel TBB for the numba parallel kernels; recommended for training on many-core servers (64+ cores), auto-activates once installed |
 | `--docs` | — | Add the toolchain (sphinx) needed to build the documentation locally |
 | `-h`, `--help` | — | Show the help message |
 

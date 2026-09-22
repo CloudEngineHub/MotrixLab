@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from motrix_env_core.perf import Perf
 from motrix_rl.fastsac.async_impl.collector import Collector, resolve_collector_inference_device
 from motrix_rl.fastsac.async_impl.shm import Control, SharedTransitionRing
 from motrix_rl.fastsac.async_impl.shm.weight_channel import HostWeightReceiver, HostWeightSender, WeightChannelShared
@@ -21,10 +22,16 @@ _ACT_DIM = 3
 
 
 class _CpuEnv:
+    """Wrapper stand-in: the collector reads the original env via ``.env``."""
+
     def __init__(self):
         self.num_envs = _NUM_ENVS
         self.last_info = {}
         self.last_actions = None
+
+    @property
+    def env(self):
+        return self
 
     def reset(self):
         return torch.zeros(_NUM_ENVS, _OBS_DIM), torch.zeros(_NUM_ENVS, _CRITIC_OBS_DIM)
@@ -39,6 +46,23 @@ class _CpuEnv:
             torch.zeros(_NUM_ENVS, dtype=torch.bool),
             torch.zeros(_NUM_ENVS, dtype=torch.bool),
         )
+
+
+class _PerfEnv(_CpuEnv):
+    """Env exposing the core Perf contract the collector's panel hooks into."""
+
+    def __init__(self):
+        super().__init__()
+        self.perf = Perf()
+
+    def step(self, actions):
+        with self.perf.scope("step"):
+            with self.perf.scope("apply_action"):
+                pass
+            with self.perf.scope("physics"):
+                with self.perf.scope("read"):
+                    result = super().step(actions)
+        return result
 
 
 def _cfg(device: str, *, compile: bool = False, amp: bool = False):
@@ -184,11 +208,48 @@ def test_collector_explicit_cpu_placement_and_timing() -> None:
     assert "collect" in stats["timing_ms"]
     assert "sample_actions" in stats["timing_ms"]
     assert "sync" in stats["timing_ms"]
-    assert "sync_wait_writer" in stats["timing_ms"]
-    assert "sync_host_snapshot" in stats["timing_ms"]
-    assert "sync_actor_load" in stats["timing_ms"]
+    assert "sync.wait_writer" in stats["timing_ms"]
+    assert "sync.host_snapshot" in stats["timing_ms"]
+    assert "sync.actor_load" in stats["timing_ms"]
     assert collector.ring.obs.device.type == "cpu"
     assert collector.ring.critic_obs.device.type == "cpu"
+
+
+def test_collector_reports_env_step_substage_timing() -> None:
+    env = _PerfEnv()
+    cfg = _cfg("cpu")
+    ring = SharedTransitionRing(2, _NUM_ENVS, _OBS_DIM, _CRITIC_OBS_DIM, _ACT_DIM)
+    source_actor, source_normalizer = _source_policy()
+    shared = WeightChannelShared(_OBS_DIM)
+    weight_tx = HostWeightSender(shared, sum(p.numel() for p in source_actor.parameters()))
+    weight_rx = HostWeightReceiver(shared, weight_tx.params)
+    weight_tx.publish(source_actor, source_normalizer)
+    collector = Collector(
+        env,
+        cfg,
+        _OBS_DIM,
+        _CRITIC_OBS_DIM,
+        _ACT_DIM,
+        source_actor.action_scale,
+        source_actor.action_bias,
+        ring,
+        weight_rx,
+        Control(),
+    )
+    collector.reset()
+    collector.sync_weights()
+
+    assert collector.step_once()
+    stats = collector.snapshot_stats()
+
+    assert "env_step" in stats["timing_ms"]
+    assert "env_step.apply_action" in stats["timing_ms"]
+    assert "env_step.physics" in stats["timing_ms"]
+    # nested sub-stages arrive as dotted paths for the panel's tree rebuild
+    assert "env_step.physics.read" in stats["timing_ms"]
+    assert stats["timing_ms"]["env_step.apply_action"] >= 0.0
+    # sub-stage aggregation is windowed like the other timings
+    assert env.perf.snapshot() == ()
 
 
 def test_collector_cuda_request_fails_without_cuda(monkeypatch) -> None:

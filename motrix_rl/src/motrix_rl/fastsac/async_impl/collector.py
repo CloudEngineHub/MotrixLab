@@ -95,6 +95,12 @@ class Collector:
         self.weights = weights
         self.control = control
         self.is_resume = is_resume
+        # Env-internal step profiling (Perf on the wrapped env, when present)
+        # feeds the panel's env_step sub-stage tree. ``env.env`` is the
+        # FastSacEnvWrap contract for reaching the original environment.
+        self._env_perf = getattr(env.env, "perf", None)
+        if self._env_perf is not None:
+            self._env_perf.enable()
         self._learning_starts = acfg.learning_starts
 
         self.actor = Actor(
@@ -325,6 +331,9 @@ class Collector:
             "env_metrics": dict(self.last_env_metrics),
             "policy_lag": self.policy_lag,
             # Average wall-clock milliseconds per successful env-step batch.
+            # Nested stages use dotted paths (``sync.wait_writer``,
+            # ``env_step.physics.read``): the panel rebuilds one tree from
+            # them with a single rule, so key prefixes never encode structure.
             "timing_ms": {
                 "collect": self._collect_t * 1000.0 / max(self._collect_n, 1),
                 "wait": self._wait_t * 1000.0 / max(self._collect_n, 1),
@@ -333,11 +342,16 @@ class Collector:
                 "push": self._push_t * 1000.0 / max(self._collect_n, 1),
                 "bookkeep": self._bookkeep_t * 1000.0 / max(self._collect_n, 1),
                 "sync": self._sync_t * 1000.0 / max(self._collect_n, 1),
-                "sync_wait_writer": self._sync_wait_writer_t * 1000.0 / max(self._collect_n, 1),
-                "sync_host_snapshot": self._sync_host_snapshot_t * 1000.0 / max(self._collect_n, 1),
-                "sync_actor_load": self._sync_actor_load_t * 1000.0 / max(self._collect_n, 1),
+                "sync.wait_writer": self._sync_wait_writer_t * 1000.0 / max(self._collect_n, 1),
+                "sync.host_snapshot": self._sync_host_snapshot_t * 1000.0 / max(self._collect_n, 1),
+                "sync.actor_load": self._sync_actor_load_t * 1000.0 / max(self._collect_n, 1),
             },
         }
+        env_perf = self._env_perf
+        if env_perf is not None:
+            for path, mean_ms in env_perf.stage_mean_ms("step").items():
+                stats["timing_ms"][f"env_step.{path}"] = mean_ms
+            env_perf.reset()
         self.term_accum, self.term_count = {}, 0
         self._collect_t = 0.0
         self._sample_actions_t = 0.0
