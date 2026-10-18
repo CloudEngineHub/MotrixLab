@@ -168,7 +168,8 @@ registry.env("<robot>-walk-flat")(QuadrupedWalkTask)
 registry.env("<robot>-walk-rough")(QuadrupedWalkTask)
 ```
 
-Import the module from `motrix_envs/locomotion/quadruped/__init__.py`, so `import motrix_envs` performs registration.
+Import the module from `motrix_envs/locomotion/quadruped/__init__.py` so the built-in registration callback includes it.
+For a standalone package, follow [Environment registration](../../tutorial/building_envs/direct_env.md#environment-registration).
 Each `registry.env(...)` ID must exactly match its `@registry.envcfg(...)` ID. Register only the flat ID when no rough
 config is provided.
 
@@ -199,7 +200,7 @@ Use this progression:
 python scripts/view.py robot=<robot-config-id>
 python scripts/view.py env=<robot>-walk-flat
 python scripts/view.py env=<robot>-walk-rough
-python scripts/train.py task=<robot>-walk-flat/rslrl.ppo
+mxtrain task=<robot>-walk-flat/rslrl.ppo
 ```
 
 During preview, inspect the default pose, action direction, all four foot contacts, foot-position reference frames, and

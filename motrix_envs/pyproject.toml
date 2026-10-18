@@ -19,5 +19,11 @@ dependencies = [
     "omegaconf>=2.3,<2.4",
 ]
 
+[project.entry-points."motrix_env_core.envs"]
+builtin = "motrix_envs:register"
+
+[project.entry-points."motrix_deploy.profiles"]
+builtin = "motrix_envs.deploy:register"
+
 [project.optional-dependencies]
 deploy = ["motrix-deploy==0.4.0b1", "motrix-deploy-tasks==0.4.0b1"]

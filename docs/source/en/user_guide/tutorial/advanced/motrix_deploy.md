@@ -4,7 +4,7 @@ Run an exported Go2 policy in MuJoCo before attempting hardware deployment. With
 a bounded headless check is:
 
 ```bash
-motrix-deploy task=go2-walk-flat/sim artifact=artifacts/go2-walk-flat.deploy runtime.viewer=false duration_s=2.0
+mxdeploy task=go2-walk-flat/sim artifact=artifacts/go2-walk-flat.deploy runtime.viewer=false duration_s=2.0
 ```
 
 The following steps create that artifact, explain interactive control, and cover the existing Unitree hardware workflow.
@@ -16,7 +16,7 @@ From the repository root:
 ```bash
 sh install.sh --all
 source .venv/bin/activate
-python scripts/train.py task=go2-walk-flat/rslrl.ppo
+mxtrain task=go2-walk-flat/rslrl.ppo
 ```
 
 Training results are saved under `runs/go2-walk-flat/`. Skip training if you already have a metadata-backed run.
@@ -24,13 +24,24 @@ Training results are saved under `runs/go2-walk-flat/`. Skip training if you alr
 ## 2. Export and inspect the artifact
 
 ```bash
-python scripts/export_deploy.py env=go2-walk-flat
-motrix-deploy inspect artifact=artifacts/go2-walk-flat.deploy
+mxexport deploy env=go2-walk-flat output=artifacts/go2-walk-flat.deploy
+mxdeploy inspect artifact=artifacts/go2-walk-flat.deploy
 ```
 
-Export selects the latest run and creates `artifacts/go2-walk-flat.deploy/`. To select a specific run, use
-`run=<run-dir>` instead of `env`; `output=<new-artifact-dir>` changes the destination. Existing artifact directories are
-not overwritten. Confirm that inspection reports `valid: true`.
+`env=go2-walk-flat` selects the latest metadata-backed run. To select a specific run, use
+`run_dir=<run-dir>` instead of `env`: exactly one of `env` and `run_dir` must be set. `output=<new-artifact-dir>` changes
+the destination; when omitted, it defaults to `artifacts/<env-name>.deploy`. Existing artifact directories are not
+overwritten. Confirm that inspection reports `valid: true`.
+
+`mxexport` requires an explicit `onnx` or `deploy` subcommand. The equivalent module command is
+`python -m motrix_rl.commands.export deploy`. Export uses the current directory's `./configs` when present, or an
+explicit `--config-dir <path>`; project files take precedence and missing files fall back to `motrix_rl.configs`.
+Both `export_deploy.yaml` and `export_onnx.yaml` ship there, so export does not require a repository checkout.
+Deployment export keeps its numerical-check options under `validation.*` (for example `validation.atol=3e-5`),
+not the ONNX subcommand's `parity.*`.
+
+Export runs in `motrix-rl` and requires the training provider and an installed profile compiler for the environment.
+The dependency is one-way: `motrix-rl` uses `motrix-deploy` to create artifacts; `motrix-deploy` has no RL dependency.
 
 The artifact directory is self-contained:
 
@@ -55,7 +66,7 @@ string selector, not a nested configuration mapping or Hydra group.
 Use the headless command above for a bounded run, or open the viewer:
 
 ```bash
-motrix-deploy task=go2-walk-flat/sim artifact=artifacts/go2-walk-flat.deploy
+mxdeploy task=go2-walk-flat/sim artifact=artifacts/go2-walk-flat.deploy
 ```
 
 Hold `W/S` to move forward/backward, `A/D` sideways, and `Q/E` to turn. Close the window, press Esc, or press Ctrl-C to stop.
@@ -85,7 +96,7 @@ Raw ONNX use requires explicit task preprocessing and action settings; the artif
 With `motrix-deploy-motrixsim` installed, switch the backend to `motrixsim` to reuse the same artifact and scene recipe:
 
 ```bash
-motrix-deploy task=go2-walk-flat/sim artifact=artifacts/go2-walk-flat.deploy \
+mxdeploy task=go2-walk-flat/sim artifact=artifacts/go2-walk-flat.deploy \
   runtime.backend=motrixsim runtime.viewer=true
 ```
 
@@ -102,7 +113,7 @@ ready. Startup can physically stand the robot down before the remote Start gate.
 `enp5s0` with the actual interface:
 
 ```bash
-motrix-deploy task=go2-walk-flat/hardware \
+mxdeploy task=go2-walk-flat/hardware \
   artifact=artifacts/go2-walk-flat.deploy \
   runtime.network_interface=enp5s0
 ```
@@ -143,7 +154,7 @@ returns to the default pose, and closes with damping.
 
 ## Deploy the G1 WBT dance
 
-The G1 whole-body-tracking dance task uses the same export → artifact → `motrix-deploy` pipeline. The artifact embeds
+The G1 whole-body-tracking dance task uses the same export → artifact → `mxdeploy` pipeline. The artifact embeds
 the servo gains, action scales, preparation gains and timing, safety thresholds, and the motion clip itself (as a
 `payloads/motion.npz` payload with its checksum in the manifest), so deployment needs neither Torch nor an RL environment.
 Export needs the training provider and task environment packages, but does **not** train:
@@ -151,18 +162,18 @@ Export needs the training provider and task environment packages, but does **not
 ```bash
 source .venv/bin/activate
 RUN=runs/g1-wbt-dance/motrix/torch/fastsac/<run-dir>
-python scripts/export_deploy.py run="$RUN" \
+mxexport deploy run_dir="$RUN" \
   output=artifacts/g1-wbt-dance-software-pd.deploy validation.atol=3e-5
 
-motrix-deploy task=g1-wbt-dance/sim artifact=artifacts/g1-wbt-dance.deploy
+mxdeploy task=g1-wbt-dance/sim artifact=artifacts/g1-wbt-dance.deploy
 ```
 
 Headless validation and artifact inspection:
 
 ```bash
-motrix-deploy task=g1-wbt-dance/sim artifact=artifacts/g1-wbt-dance.deploy \
+mxdeploy task=g1-wbt-dance/sim artifact=artifacts/g1-wbt-dance.deploy \
   runtime.viewer=false
-motrix-deploy inspect artifact=artifacts/g1-wbt-dance.deploy
+mxdeploy inspect artifact=artifacts/g1-wbt-dance.deploy
 ```
 
 The default duration comes from the embedded motion clip; shorter runs use `duration_s`, longer durations are rejected
@@ -180,6 +191,49 @@ deliberately leaned pose that only the tracking policy can balance: after the pl
 damping directly, and ending upright requires the motion clip itself to finish at the standing pose.
 
 ## Advanced usage
+
+### Add a deployment profile compiler
+
+An environment package publishes one zero-argument registration callback in the
+`motrix_deploy.profiles` group. Declare the provider in `pyproject.toml`:
+
+```toml
+[project.entry-points."motrix_deploy.profiles"]
+my-project = "my_project.deploy:register"
+```
+
+In `my_project/deploy/__init__.py`, register the environment-to-compiler mappings:
+
+```python
+def register() -> None:
+    from motrix_deploy.profile import register_profile_compiler
+    from my_project.deploy.walk import build_profile
+
+    register_profile_compiler("my-walk-flat", build_profile)
+```
+
+Implement `build_profile(env_name: str) -> DeploymentProfile` in `my_project/deploy/walk.py`, importing
+`DeploymentProfile` from `motrix_deploy.profile`. The compiler builds the selected environment's robot, task,
+control settings, training-space observation/action sizes, and task-owned payloads into that profile.
+The registration callback only declares mappings: do not create environments or models or read motion data there.
+One callback can register several Env IDs, and the same compiler can serve multiple IDs.
+
+Install the package, then export a matching run:
+
+```bash
+mxexport deploy run_dir=/path/to/my-walk-flat/run output=artifacts/my-walk-flat.deploy
+```
+
+The first profile lookup, listing, or build loads all installed provider callbacks, once per process.
+`registered_profile_compilers()` in `motrix_deploy.profile` therefore executes registration code before listing Env IDs;
+only `build_deployment_profile(env_name)` invokes the selected environment's compiler.
+Install the import dependencies of every provider: a provider with missing dependencies can prevent discovery even
+when a different Env ID was requested. Duplicate provider names, duplicate compiler Env IDs, and provider loading or
+registration failures are reported as errors.
+
+Profile discovery needs no application-side registration imports. Providers use the deployment API without an RL
+dependency; `motrix-rl` consumes their profiles for export, not the reverse. Built-in compiler mappings are listed in the
+[Motrix Environments README](https://github.com/Motphys/MotrixLab/blob/main/motrix_envs/README.md).
 
 ### Load a task spec from YAML
 
@@ -211,7 +265,7 @@ Select a world with `runtime.deploy_env_id` and a robot with `runtime.robot_id`.
 artifact but switch its world:
 
 ```bash
-motrix-deploy task=go2-walk-flat/sim artifact=artifacts/go2-walk-flat.deploy \
+mxdeploy task=go2-walk-flat/sim artifact=artifacts/go2-walk-flat.deploy \
   runtime.deploy_env_id=rough
 ```
 
@@ -306,7 +360,7 @@ The installed simulation recipes default to MuJoCo. With `motrix-deploy-motrixsi
 installed, choose the native backend using the same recipe and artifact:
 
 ```bash
-motrix-deploy task=go2-walk-flat/sim artifact=artifacts/go2-walk-flat.deploy \
+mxdeploy task=go2-walk-flat/sim artifact=artifacts/go2-walk-flat.deploy \
   runtime.backend=motrixsim runtime.viewer=false runtime.realtime=false duration_s=1.0
 ```
 
@@ -333,7 +387,7 @@ This illustrative command assumes you have authored `/absolute/path/to/my_app/co
 or copy a built-in recipe:
 
 ```bash
-motrix-deploy \
+mxdeploy \
   --config-path /absolute/path/to/my_app/config \
   --config-name deploy \
   artifact=artifacts/go2-walk-flat.deploy
